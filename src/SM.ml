@@ -1,4 +1,5 @@
-open GT       
+open GT  
+open Syntax  
        
 (* The type for the stack machine instructions *)
 @type insn =
@@ -22,8 +23,39 @@ type config = int list * Syntax.Stmt.config
      val eval : config -> prg -> config
 
    Takes a configuration and a program, and returns a configuration as a result
- *)                         
-let eval _ = failwith "Not yet implemented"
+ *)                     
+let rec eval (config : config) (prg : prg) : config = 
+  (match prg with
+   | []        -> config
+   | (x :: xs) ->
+     eval (match config with
+      | (stack, ((st, i, o) as cfg)) ->
+        (match x with
+         | BINOP bo ->
+           (match stack with
+            | (r :: l :: ls) -> (Expr.eval st (Binop (bo, Const l, Const r)) :: ls, cfg)
+            | _              -> failwith "SM: Can't calculate binop: too few values."
+           )
+         | CONST v  -> (v :: stack, cfg)
+         | READ     -> 
+           (match i with
+            | (y :: ys) -> (y :: stack, (st, ys, o))
+            | _         -> failwith "SM: No input to read."
+           )
+         | WRITE    ->
+           (match stack with
+            | (y :: ys) -> (ys, (st, i, o @ [y]))
+            | _         -> failwith "SM: No stack to output."
+           )
+         | LD v -> (st v :: stack, cfg)
+         | ST v ->
+           (match stack with
+            | (y :: ys) -> (ys, (Expr.update v y st, i, o))
+            | _         -> failwith "SM: No stack to store."
+           )
+        )
+     ) xs
+  )
 
 (* Top-level evaluation
 
@@ -40,5 +72,17 @@ let run i p = let (_, (_, _, o)) = eval ([], (Syntax.Expr.empty, i, [])) p in o
    Takes a program in the source language and returns an equivalent program for the
    stack machine
  *)
+ 
+let rec compileExpr (expr : Expr.t) : prg = 
+  match expr with 
+  | Const c          -> [CONST c]
+  | Var v            -> [LD v]
+  | Binop (op, l, r) -> compileExpr l @ compileExpr r @ [BINOP op]
 
-let compile _ = failwith "Not yet implemented"
+let rec compile (stmt : Stmt.t) : prg = 
+  (match stmt with 
+   | Read v        -> (READ :: [ST v])
+   | Write e       -> compileExpr e @ [WRITE]
+   | Assign (x, e) -> compileExpr e @ [ST x]
+   | Seq (l, r)    -> compile l @ compile r
+  )
