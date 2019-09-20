@@ -4,7 +4,9 @@
 open GT
 
 (* Opening a library for combinator-based syntax analysis *)
+open Ostap
 open Ostap.Combinators
+open Matcher
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -83,7 +85,33 @@ module Expr =
    
     *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      parse:
+      	!(Util.expr      
+          (fun x -> x)                                   
+          [|                                           
+           `Lefta , [ ostap ("!!"), fun x y -> Binop ("!!", x, y)
+                    ];
+           `Lefta , [ ostap ("&&"), fun x y -> Binop ("&&", x, y)
+                    ]; 
+           `Nona , [ ostap ("=="), (fun x y -> Binop ("==", x, y))
+                   ; ostap ("!="), (fun x y -> Binop ("!=", x, y))
+                   ; ostap ("<="), (fun x y -> Binop ("<=", x, y))
+                   ; ostap ("<"), (fun x y -> Binop ("<", x, y))
+                   ; ostap (">="), (fun x y -> Binop (">=", x, y))
+                   ; ostap (">"), (fun x y -> Binop (">", x, y))
+                   ]; 
+           `Lefta , [ ostap ("+"), (fun x y -> Binop ("+", x, y))
+                    ; ostap ("-"), (fun x y -> Binop ("-", x, y))
+                    ]; 
+           `Lefta , [ ostap ("*"), (fun x y -> Binop ("*", x, y))
+                    ; ostap ("/"), (fun x y -> Binop ("/", x, y))
+                    ; ostap ("%"), (fun x y -> Binop ("%", x, y))
+                    ]
+          |] 	                                            
+          primary                                          
+        );
+      
+      primary: x:IDENT {Var x} | x:DECIMAL {Const x} | -"(" parse -")"
     )
 
   end
@@ -123,8 +151,12 @@ module Stmt =
 
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
-    )
+      parse  : seq | read | write | assign;                                                                
+      read   : "read" -" "* -"(" x:IDENT -")" {Read x};
+      write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
+      assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
+      seq    : l:(read | write | assign) -" "* -";" -" "* r:parse {Seq (l, r)}
+    )  
       
   end
 
