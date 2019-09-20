@@ -36,6 +36,16 @@ module Expr =
       to value v and returns the new state.
     *)
     let update x v s = fun y -> if x = y then v else s y
+    
+    let toInt x =
+      match x with
+      | true  -> 1
+      | false -> 0
+      
+    let toBool x =
+      match x with
+      | 0 -> false
+      | _ -> true
 
     (* Expression evaluator
 
@@ -44,7 +54,27 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval st expr = 
+      match expr with 
+      | Const c          -> c
+      | Var v            -> st v
+      | Binop (op, l, r) -> 
+        let (lEval, rEval) = (eval st l, eval st r) in
+          match op with
+          | "+"  -> lEval + rEval
+          | "-"  -> lEval - rEval
+          | "*"  -> lEval * rEval
+          | "/"  -> lEval / rEval
+          | "%"  -> lEval mod rEval
+          | "<"  -> toInt (lEval < rEval)
+          | "<=" -> toInt (lEval <= rEval)
+          | ">"  -> toInt (lEval > rEval)
+          | ">=" -> toInt (lEval >= rEval)
+          | "==" -> toInt (lEval == rEval)
+          | "!=" -> toInt (lEval <> rEval)
+          | "&&" -> toInt (toBool lEval && toBool rEval)
+          | "!!" -> toInt (toBool lEval || toBool rEval)
+          | a    -> failwith ("Unknown binary operator: " ^ a)
 
     (* Expression parser. You can use the following terminals:
 
@@ -78,7 +108,18 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval config stmt = 
+      match config with
+      | (st, i, o) -> 
+        (match stmt with 
+         | Read x       -> 
+           (match i with
+            | []        -> failwith "No input to read from."
+            | (y :: ys) -> (Expr.update x y st, ys, o))
+         | Write e       -> (st, i, o @ [Expr.eval st e])
+         | Assign (x, e) -> (Expr.update x (Expr.eval st e) st, i, o)
+         | Seq (l, r)    -> eval (eval config l) r
+        )
 
     (* Statement parser *)
     ostap (
