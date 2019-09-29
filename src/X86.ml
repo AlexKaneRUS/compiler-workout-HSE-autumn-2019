@@ -73,6 +73,62 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let showReg = function
+| R i -> regs.(i)
+
+let compileSimple x env = function
+| (R _ as lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Binop (x, lOp, rOp); Push op; Mov (lOp, op)]
+| (lOp, (R _ as rOp)) -> 
+  let op, env = env#allocate in
+  env, [Binop (x, rOp, lOp); Push op; Mov (rOp, op)]
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); Binop (x, eax, rOp); Push op; Mov (eax, op)]
+  
+let compileSub env = function
+| (lOp, (R _ as rOp)) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); Binop ("-", eax, rOp); Push op; Mov (eax, op)]
+| lr -> compileSimple "-" env lr
+
+let compileEquality x env = function
+| (lOp, rOp) ->
+  let op, env = env#allocate in
+  match x with
+  | "==" -> 
+  env, [Binop ("cmp", lOp, rOp); Push op; Set ("ZF", showReg op)]
+  | "!=" -> 
+  env, [Binop ("cmp", lOp, rOp); Set ("SF", showReg eax);
+        Binop ("cmp", rOp, lOp); Set ("SF", showReg edx);
+        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
+        
+let compileComparison x env = function
+| (lOp, rOp) ->
+  let op, env = env#allocate in
+  match x with
+  | "<" -> 
+  env, [Binop ("cmp", rOp, lOp); Push op; Set ("SF", showReg op)]
+  | "<=" -> 
+  env, [Binop ("cmp", rOp, lOp); Set ("SF", showReg eax); Set ("ZF", showReg edx);
+        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
+  | ">" -> 
+  env, [Binop ("cmp", lOp, rOp); Push op; Set ("SF", showReg op)]
+  | ">=" -> 
+  env, [Binop ("cmp", lOp, rOp); Set ("SF", showReg eax); Set ("ZF", showReg edx);
+        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
+
+let rec compileDiv env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); IDiv rOp; Push op; Mov (eax, op)]
+  
+let rec compileMod env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); IDiv rOp; Push op; Mov (edx, op)]
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -80,7 +136,49 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile _ _ = failwith "Not yet implemented"
+let rec compile env = function
+| []           -> env, []
+| (CONST x)::prg -> 
+  let op, env     = env#allocate in
+  let env, instrs = compile env prg in
+  env, (Mov (L x, op))::instrs
+| (LD x)::prg -> 
+  let op, env = env#allocate in 
+  let env, instrs = compile env prg in
+  env, (Mov (M (env#loc x), op))::instrs
+| (ST x)::prg -> 
+  let op, env = env#pop in 
+  let env = env#global x in
+  let env, instrs = compile env prg in
+  env, (Mov (op, M (env#loc x)))::instrs
+| READ::prg -> 
+  let op, env = env#allocate in 
+  let env, instrs = compile env prg in
+  env, [Call "Lread"; Pop op] @ instrs
+| WRITE::prg -> 
+  let op, env = env#pop in 
+  let env, instrs = compile env prg in
+  env, [Push op; Call "Lwrite"] @ instrs
+| (BINOP x)::prg -> 
+  let lOp, rOp, env = env#pop2 in
+  let env, instrs = (match x with
+                     | "+"  -> compileSimple x env (lOp, rOp)
+                     | "-"  -> compileSub env (lOp, rOp)
+                     | "*"  -> compileSimple x env (lOp, rOp)
+                     | "/"  -> compileDiv env (lOp, rOp)
+                     | "%"  -> compileMod env (lOp, rOp)
+                     | "<"  -> compileComparison x env (lOp, rOp)
+                     | "<=" -> compileComparison x env (lOp, rOp)
+                     | ">"  -> compileComparison x env (lOp, rOp)
+                     | ">=" -> compileComparison x env (lOp, rOp)
+                     | "==" -> compileEquality x env (lOp, rOp)
+                     | "!=" -> compileEquality x env (lOp, rOp)
+                     | "&&" -> compileSimple x env (lOp, rOp)
+                     | "!!" -> compileSimple x env (lOp, rOp)
+                     | a    -> failwith ("Unknown binary operator: " ^ a)) in
+  let env, instrs' = compile env prg in
+  env, instrs @ instrs'
+
 
 (* A set of strings *)           
 module S = Set.Make (String)
