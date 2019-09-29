@@ -28,7 +28,38 @@ type config = int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
-let rec eval env conf prog = failwith "Not yet implemented"
+let rec eval (config : config) (prg : prg) : config = 
+    (match prg with
+     | []        -> config
+     | (x :: xs) ->
+       eval (match config with
+        | (stack, ((st, i, o) as cfg)) ->
+          (match x with
+           | BINOP bo ->
+             (match stack with
+              | (r :: l :: ls) -> (Expr.eval st (Binop (bo, Const l, Const r)) :: ls, cfg)
+              | _              -> failwith "SM: Can't calculate binop: too few values."
+             )
+           | CONST v  -> (v :: stack, cfg)
+           | READ     -> 
+             (match i with
+              | (y :: ys) -> (y :: stack, (st, ys, o))
+              | _         -> failwith "SM: No input to read."
+             )
+           | WRITE    ->
+             (match stack with
+              | (y :: ys) -> (ys, (st, i, o @ [y]))
+              | _         -> failwith "SM: No stack to output."
+             )
+           | LD v -> (st v :: stack, cfg)
+           | ST v ->
+             (match stack with
+              | (y :: ys) -> (ys, (Expr.update v y st, i, o))
+              | _         -> failwith "SM: No stack to store."
+             )
+          )
+       ) xs
+    )
 
 (* Top-level evaluation
 

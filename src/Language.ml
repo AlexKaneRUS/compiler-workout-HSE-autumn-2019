@@ -4,7 +4,9 @@
 open GT
 
 (* Opening a library for combinator-based syntax analysis *)
+open Ostap
 open Ostap.Combinators
+open Matcher
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -36,6 +38,16 @@ module Expr =
       to value v and returns the new state.
     *)
     let update x v s = fun y -> if x = y then v else s y
+    
+    let toInt x =
+     match x with
+     | true  -> 1
+     | false -> 0
+
+    let toBool x =
+     match x with
+     | 0 -> false
+     | _ -> true
 
     (* Expression evaluator
 
@@ -43,8 +55,28 @@ module Expr =
  
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
-    *)                                                       
-    let eval st expr = failwith "Not yet implemented"
+     *)                                                       
+     let rec eval st expr = 
+        match expr with 
+        | Const c          -> c
+        | Var v            -> st v
+        | Binop (op, l, r) -> 
+          let (lEval, rEval) = (eval st l, eval st r) in
+            match op with
+            | "+"  -> lEval + rEval
+            | "-"  -> lEval - rEval
+            | "*"  -> lEval * rEval
+            | "/"  -> lEval / rEval
+            | "%"  -> lEval mod rEval
+            | "<"  -> toInt (lEval < rEval)
+            | "<=" -> toInt (lEval <= rEval)
+            | ">"  -> toInt (lEval > rEval)
+            | ">=" -> toInt (lEval >= rEval)
+            | "==" -> toInt (lEval == rEval)
+            | "!=" -> toInt (lEval <> rEval)
+            | "&&" -> toInt (toBool lEval && toBool rEval)
+            | "!!" -> toInt (toBool lEval || toBool rEval)
+            | a    -> failwith ("Unknown binary operator: " ^ a)
 
     (* Expression parser. You can use the following terminals:
 
@@ -52,9 +84,35 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
-    )
+    ostap (       
+       parse:
+       	!(Util.expr      
+           (fun x -> x)                                   
+           [|                                           
+            `Lefta , [ ostap ("!!"), fun x y -> Binop ("!!", x, y)
+                     ];
+            `Lefta , [ ostap ("&&"), fun x y -> Binop ("&&", x, y)
+                     ]; 
+            `Nona , [ ostap ("=="), (fun x y -> Binop ("==", x, y))
+                    ; ostap ("!="), (fun x y -> Binop ("!=", x, y))
+                    ; ostap ("<="), (fun x y -> Binop ("<=", x, y))
+                    ; ostap ("<"), (fun x y -> Binop ("<", x, y))
+                    ; ostap (">="), (fun x y -> Binop (">=", x, y))
+                    ; ostap (">"), (fun x y -> Binop (">", x, y))
+                    ]; 
+            `Lefta , [ ostap ("+"), (fun x y -> Binop ("+", x, y))
+                     ; ostap ("-"), (fun x y -> Binop ("-", x, y))
+                     ]; 
+            `Lefta , [ ostap ("*"), (fun x y -> Binop ("*", x, y))
+                     ; ostap ("/"), (fun x y -> Binop ("/", x, y))
+                     ; ostap ("%"), (fun x y -> Binop ("%", x, y))
+                     ]
+           |] 	                                            
+           primary                                          
+         );
+
+        primary: x:IDENT {Var x} | x:DECIMAL {Const x} | -"(" parse -")"
+     )		     
     
   end
                     
@@ -82,12 +140,27 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval conf stmt = failwith "Not yet implemented"
-                               
+    let rec eval config stmt = 
+       match config with
+       | (st, i, o) -> 
+         (match stmt with 
+          | Read x       -> 
+            (match i with
+             | []        -> failwith "No input to read from."
+             | (y :: ys) -> (Expr.update x y st, ys, o))
+          | Write e       -> (st, i, o @ [Expr.eval st e])
+          | Assign (x, e) -> (Expr.update x (Expr.eval st e) st, i, o)
+          | Seq (l, r)    -> eval (eval config l) r
+         )
+
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not yet implemented"}
-    )
+       parse  : seq | read | write | assign;                                                                      
+       read   : "read" -" "* -"(" x:IDENT -")" {Read x};
+       write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
+       assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
+       seq    : l:(read | write | assign) -" "* -";" -" "* r:parse {Seq (l, r)}
+     )  
       
   end
 
