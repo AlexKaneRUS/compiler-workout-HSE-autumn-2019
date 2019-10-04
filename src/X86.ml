@@ -132,12 +132,12 @@ let rec compile env = function
 | (LD x)::prg -> 
   let op, env = env#allocate in 
   let env, instrs = compile env prg in
-  env, (Mov (M (env#loc x), op))::instrs
+  env, [Mov (M (env#loc x), eax); Mov (eax, op)] @ instrs
 | (ST x)::prg -> 
   let op, env = env#pop in 
   let env = env#global x in
   let env, instrs = compile env prg in
-  env, (Mov (op, M (env#loc x)))::instrs
+  env, [Mov (op, eax); Mov(eax, M (env#loc x))] @ instrs
 | READ::prg -> 
   let op, env = env#allocate in 
   let env, instrs = compile env prg in
