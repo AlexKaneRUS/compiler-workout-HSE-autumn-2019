@@ -72,7 +72,7 @@ module Expr =
             | "<=" -> toInt (lEval <= rEval)
             | ">"  -> toInt (lEval > rEval)
             | ">=" -> toInt (lEval >= rEval)
-            | "==" -> toInt (lEval == rEval)
+            | "==" -> toInt (lEval = rEval)
             | "!=" -> toInt (lEval <> rEval)
             | "&&" -> toInt (toBool lEval && toBool rEval)
             | "!!" -> toInt (toBool lEval || toBool rEval)
@@ -129,7 +129,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | Until of t * Expr.t  with show
                                                                     
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list 
@@ -144,22 +144,45 @@ module Stmt =
        match config with
        | (st, i, o) -> 
          (match stmt with 
-          | Read x       -> 
+          | Read x             -> 
             (match i with
              | []        -> failwith "No input to read from."
              | (y :: ys) -> (Expr.update x y st, ys, o))
-          | Write e       -> (st, i, o @ [Expr.eval st e])
-          | Assign (x, e) -> (Expr.update x (Expr.eval st e) st, i, o)
-          | Seq (l, r)    -> eval (eval config l) r
+          | Write e            -> (st, i, o @ [Expr.eval st e])
+          | Assign (x, e)      -> (Expr.update x (Expr.eval st e) st, i, o)
+          | Seq (l, r)         -> eval (eval config l) r
+          | Skip               -> config
+          | If (cond, th, el)  -> if (Expr.toBool (Expr.eval st cond)) then eval config th else eval config el
+          | While (cond, body) -> if (Expr.toBool (Expr.eval st cond)) then eval (eval config body) (While (cond, body)) else config
+          | Until (body, cond) -> 
+          let (st, _, _) as conf = eval config body in
+          if (Expr.toBool (Expr.eval st cond)) then conf else eval conf (Until (body, cond))
          )
 
     (* Statement parser *)
     ostap (
-       parse  : seq | read | write | assign;                                                                      
+       parse  : seq | read | write | assign | skip | ifP | whileP | untilP | forP;                                                                      
        read   : "read" -" "* -"(" x:IDENT -")" {Read x};
        write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
        assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
-       seq    : l:(read | write | assign) -" "* -";" -" "* r:parse {Seq (l, r)}
+       seq    : l:(read | write | assign | skip | ifP | whileP | untilP | forP) -" "* -";" -" "* r:parse {Seq (l, r)};
+       skip   : "skip" {Skip};
+       ifP    : -"if" -" "* ifHelper;
+       ifHelper : cond:!(Expr.parse) -" "* -"then" -" "* th:!(parse) el:!(elseP) {If (cond, th, el)};
+       elseP    : -"elif" -" "* ifHelper
+                | -"else" -" "* parse -"fi"
+                | -"fi" {Skip};
+       whileP : "while" -" "* cond:!(Expr.parse) -" "* 
+                   -"do" -" "* body:!(parse) 
+                   -"od" {While (cond, body)};
+       untilP : "repeat" -" "* body:!(parse) -" "* 
+                 -"until" -" "* cond:!(Expr.parse)
+                 {Until (body, cond)};
+       forP   : -"for" -" "* pred:!(parse) -" "* "," -" "*
+                cond:!(Expr.parse) -" "* -"," -" "* 
+                post:!(parse) -" "* -"do" 
+                body:!(parse) -" "* -"od" 
+                {Seq (pred, While (cond, Seq (body, post)))}
      )  
       
   end

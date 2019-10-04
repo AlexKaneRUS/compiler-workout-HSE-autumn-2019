@@ -85,7 +85,7 @@ let showReg = function
 let compileSimple x env = function
 | (lOp, rOp) -> 
   let op, env = env#allocate in
-  env, [Mov (rOp, eax); Binop (x, lOp, eax); Mov (eax, op)]
+  env, [Mov (lOp, eax); Binop (x, rOp, eax); Mov (eax, op)]
         
 let compileComparison x env = function
 | (lOp, rOp) ->
@@ -139,11 +139,21 @@ let rec compile env = function
   let op, env = env#pop in 
   let env, instrs = compile env prg in
   env, [Push op; Call "Lwrite"] @ instrs
+| (LABEL l)::prg -> 
+  let env, instrs = compile env prg in
+  env, [Label l] @ instrs
+| (JMP l)::prg -> 
+  let env, instrs = compile env prg in
+  env, [Jmp l] @ instrs
+| (CJMP (z, l))::prg -> 
+  let op, env = env#pop in
+  let env, instrs = compile env prg in
+  env, [Binop ("cmp", L 0, op); CJmp (z, l)] @ instrs
 | (BINOP x)::prg -> 
   let rOp, lOp, env = env#pop2 in
   let env, instrs = (match x with
                      | "+"  -> compileSimple x env (lOp, rOp)
-                     | "-"  -> compileSimple x env (rOp, lOp)
+                     | "-"  -> compileSimple x env (lOp, rOp)
                      | "*"  -> compileSimple x env (lOp, rOp)
                      | "/"  -> compileDiv env (lOp, rOp)
                      | "%"  -> compileMod env (lOp, rOp)
