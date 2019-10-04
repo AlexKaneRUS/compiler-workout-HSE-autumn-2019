@@ -79,14 +79,13 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
-let showReg = function
-| R i -> regs.(i)
-
 let compileSimple x env = function
 | (lOp, rOp) -> 
   let op, env = env#allocate in
   env, [Mov (lOp, eax); Binop (x, rOp, eax); Mov (eax, op)]
-        
+  
+let showReg (R i) = regs.(i)
+      
 let compileComparison x env = function
 | (lOp, rOp) ->
   let op, env = env#allocate in
@@ -97,7 +96,15 @@ let compileComparison x env = function
   | ">=" -> "ge"
   | "==" -> "e"
   | "!=" -> "ne") in
-  env, [Mov (lOp, eax); Binop ("cmp", rOp, eax); Mov (L 0, edx); Set (suf, "%dl"); Mov (edx, op)]
+  env, [Mov (lOp, eax); Binop ("cmp", rOp, eax); Mov (L 0, eax); Set (suf, "%al"); Mov (eax, op)]
+  
+let intToBool x = [Mov (x, eax); Binop ("cmp", L 0, eax); Mov (L 0, eax);
+                   Set ("ne", "%al"); Mov (eax, x)]
+                   
+let compileLogic x env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, intToBool lOp @ intToBool rOp @ [Mov (lOp, eax); Binop (x, rOp, eax); Mov (eax, op)]
 
 let rec compileDiv env = function
 | (lOp, rOp) -> 
@@ -163,8 +170,8 @@ let rec compile env = function
                      | ">=" -> compileComparison x env (lOp, rOp)
                      | "==" -> compileComparison x env (lOp, rOp)
                      | "!=" -> compileComparison x env (lOp, rOp)
-                     | "&&" -> compileSimple x env (lOp, rOp)
-                     | "!!" -> compileSimple x env (lOp, rOp)
+                     | "&&" -> compileLogic x env (lOp, rOp)
+                     | "!!" -> compileLogic x env (lOp, rOp)
                      | a    -> failwith ("Unknown binary operator: " ^ a)) in
   let env, instrs' = compile env prg in
   env, instrs @ instrs'
