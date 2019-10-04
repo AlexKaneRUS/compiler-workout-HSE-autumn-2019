@@ -83,57 +83,31 @@ let showReg = function
 | R i -> regs.(i)
 
 let compileSimple x env = function
-| (R _ as lOp, rOp) -> 
-  let op, env = env#allocate in
-  env, [Binop (x, lOp, rOp); Push op; Mov (lOp, op)]
-| (lOp, (R _ as rOp)) -> 
-  let op, env = env#allocate in
-  env, [Binop (x, rOp, lOp); Push op; Mov (rOp, op)]
 | (lOp, rOp) -> 
   let op, env = env#allocate in
-  env, [Mov (lOp, eax); Binop (x, eax, rOp); Push op; Mov (eax, op)]
-  
-let compileSub env = function
-| (lOp, (R _ as rOp)) -> 
-  let op, env = env#allocate in
-  env, [Mov (lOp, eax); Binop ("-", eax, rOp); Push op; Mov (eax, op)]
-| lr -> compileSimple "-" env lr
-
-let compileEquality x env = function
-| (lOp, rOp) ->
-  let op, env = env#allocate in
-  match x with
-  | "==" -> 
-  env, [Binop ("cmp", lOp, rOp); Push op; Set ("ZF", showReg op)]
-  | "!=" -> 
-  env, [Binop ("cmp", lOp, rOp); Set ("SF", showReg eax);
-        Binop ("cmp", rOp, lOp); Set ("SF", showReg edx);
-        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
+  env, [Mov (rOp, eax); Binop (x, lOp, eax); Mov (eax, op)]
         
 let compileComparison x env = function
 | (lOp, rOp) ->
   let op, env = env#allocate in
-  match x with
-  | "<" -> 
-  env, [Binop ("cmp", rOp, lOp); Push op; Set ("SF", showReg op)]
-  | "<=" -> 
-  env, [Binop ("cmp", rOp, lOp); Set ("SF", showReg eax); Set ("ZF", showReg edx);
-        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
-  | ">" -> 
-  env, [Binop ("cmp", lOp, rOp); Push op; Set ("SF", showReg op)]
-  | ">=" -> 
-  env, [Binop ("cmp", lOp, rOp); Set ("SF", showReg eax); Set ("ZF", showReg edx);
-        Binop ("!!", eax, edx); Push op; Mov (eax, op)]
+  let suf = (match x with
+  | "<" -> "l"
+  | "<=" -> "le"
+  | ">" -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne") in
+  env, [Mov (lOp, eax); Binop ("cmp", rOp, eax); Mov (L 0, edx); Set (suf, "%dl"); Mov (edx, op)]
 
 let rec compileDiv env = function
 | (lOp, rOp) -> 
   let op, env = env#allocate in
-  env, [Mov (lOp, eax); IDiv rOp; Push op; Mov (eax, op)]
+  env, [Mov (lOp, eax); Cltd; IDiv rOp; Mov (eax, op)]
   
 let rec compileMod env = function
 | (lOp, rOp) -> 
   let op, env = env#allocate in
-  env, [Mov (lOp, eax); IDiv rOp; Push op; Mov (edx, op)]
+  env, [Mov (lOp, eax); Cltd; IDiv rOp; Mov (edx, op)]
 
 (* Symbolic stack machine evaluator
 
@@ -160,16 +134,16 @@ let rec compile env = function
 | READ::prg -> 
   let op, env = env#allocate in 
   let env, instrs = compile env prg in
-  env, [Call "Lread"; Pop op] @ instrs
+  env, [Call "Lread"; Mov (eax, op)] @ instrs
 | WRITE::prg -> 
   let op, env = env#pop in 
   let env, instrs = compile env prg in
   env, [Push op; Call "Lwrite"] @ instrs
 | (BINOP x)::prg -> 
-  let lOp, rOp, env = env#pop2 in
+  let rOp, lOp, env = env#pop2 in
   let env, instrs = (match x with
                      | "+"  -> compileSimple x env (lOp, rOp)
-                     | "-"  -> compileSub env (lOp, rOp)
+                     | "-"  -> compileSimple x env (rOp, lOp)
                      | "*"  -> compileSimple x env (lOp, rOp)
                      | "/"  -> compileDiv env (lOp, rOp)
                      | "%"  -> compileMod env (lOp, rOp)
@@ -177,8 +151,8 @@ let rec compile env = function
                      | "<=" -> compileComparison x env (lOp, rOp)
                      | ">"  -> compileComparison x env (lOp, rOp)
                      | ">=" -> compileComparison x env (lOp, rOp)
-                     | "==" -> compileEquality x env (lOp, rOp)
-                     | "!=" -> compileEquality x env (lOp, rOp)
+                     | "==" -> compileComparison x env (lOp, rOp)
+                     | "!=" -> compileComparison x env (lOp, rOp)
                      | "&&" -> compileSimple x env (lOp, rOp)
                      | "!!" -> compileSimple x env (lOp, rOp)
                      | a    -> failwith ("Unknown binary operator: " ^ a)) in
