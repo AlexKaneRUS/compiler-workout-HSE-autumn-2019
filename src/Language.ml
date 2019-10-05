@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap
 
 (* States *)
 module State =
@@ -47,6 +48,16 @@ module Expr =
     (* integer constant *) | Const of int
     (* variable         *) | Var   of string
     (* binary operator  *) | Binop of string * t * t with show
+    
+    let toInt x =
+     match x with
+     | true  -> 1
+     | false -> 0
+
+    let toBool x =
+     match x with
+     | 0 -> false
+     | _ -> true
 
     (* Available binary operators:
         !!                   --- disjunction
@@ -150,12 +161,58 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval _ = failwith "Not Implemented Yet"
-                                
+    let rec eval env config stmt = 
+       match config with
+       | (st, i, o) -> 
+         (match stmt with 
+          | Read x             -> 
+            (match i with
+             | []        -> failwith "No input to read from."
+             | (y :: ys) -> (State.update x y st, ys, o))
+          | Write e            -> (st, i, o @ [Expr.eval st e])
+          | Assign (x, e)      -> (State.update x (Expr.eval st e) st, i, o)
+          | Seq (l, r)         -> eval env (eval env config l) r
+          | Skip               -> config
+          | If (cond, th, el)  -> if (Expr.toBool (Expr.eval st cond)) then eval env config th else eval env config el
+          | While (cond, body) -> if (Expr.toBool (Expr.eval st cond)) then eval env (eval env config body) (While (cond, body)) else config
+          | Repeat (body, cond) -> 
+          let (st, _, _) as conf = eval env config body in
+          if (Expr.toBool (Expr.eval st cond)) then conf else eval env conf (Repeat (body, cond))
+          | Call (name, args) ->
+          let (fargs, flocs, fbody) = env#definition name in
+          let fstate = 
+            List.fold_left (fun st' (x, y) -> State.update x (Expr.eval st y) st') (State.push_scope st (fargs @ flocs)) (List.combine fargs args)
+          in
+          let (st', i, o) = eval env (fstate, i, o) fbody in
+          (State.drop_scope st' st, i, o)
+         )
+
     (* Statement parser *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
-    )
+    ostap (
+       parse  : seq | read | write | assign | skip | ifP | whileP | repeatP | forP | callP;                                                                      
+       read   : "read" -" "* -"(" x:IDENT -")" {Read x};
+       write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
+       assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
+       seq    : l:(read | write | assign | skip | ifP | whileP | repeatP | forP | callP) -" "* -";" -" "* r:parse {Seq (l, r)};
+       skip   : "skip" {Skip};
+       ifP    : -"if" -" "* ifHelper;
+       ifHelper : cond:!(Expr.parse) -" "* -"then" -" "* th:!(parse) el:!(elseP) {If (cond, th, el)};
+       elseP    : -"elif" -" "* ifHelper
+                | -"else" -" "* parse -"fi"
+                | -"fi" {Skip};
+       whileP : "while" -" "* cond:!(Expr.parse) -" "* 
+                   -"do" -" "* body:!(parse) 
+                   -"od" {While (cond, body)};
+       repeatP : "repeat" -" "* body:!(parse) -" "* 
+                 -"until" -" "* cond:!(Expr.parse)
+                 {Repeat (body, cond)};
+       forP   : -"for" -" "* pred:!(parse) -" "* "," -" "*
+                cond:!(Expr.parse) -" "* -"," -" "* 
+                post:!(parse) -" "* -"do" 
+                body:!(parse) -" "* -"od" 
+                {Seq (pred, While (cond, Seq (body, post)))};
+       callP  : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
+     )
       
   end
 
@@ -167,7 +224,13 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+      parse: def;
+      def: -"fun" -" "* name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][inner]? -")" -" "*
+          locals:!(local)? -"{" -" "* body:!(Stmt.parse) -" "* -"}" { (name, ((match args with None -> [] | Some s -> s)
+                                                                             ,(match locals with None -> [] | Some s -> s)
+                                                                             , body)) };
+      local: -"local" -" "* locs:!(Util.listBy)[ostap ("," " "*)][inner];
+      inner: x:IDENT
     )
 
   end
