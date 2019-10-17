@@ -73,7 +73,27 @@ module Expr =
 
        which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
        an returns resulting configuration
-    *)                                                       
+    *)                                                     
+    let to_func op =
+      let bti   = function true -> 1 | _ -> 0 in
+      let itb b = b <> 0 in
+      let (|>) f g   = fun x y -> f (g x y) in
+      match op with
+      | "+"  -> (+)
+      | "-"  -> (-)
+      | "*"  -> ( * )
+      | "/"  -> (/)
+      | "%"  -> (mod)
+      | "<"  -> bti |> (< )
+      | "<=" -> bti |> (<=)
+      | ">"  -> bti |> (> )
+      | ">=" -> bti |> (>=)
+      | "==" -> bti |> (= )
+      | "!=" -> bti |> (<>)
+      | "&&" -> fun x y -> bti (itb x && itb y)
+      | "!!" -> fun x y -> bti (itb x || itb y)
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op) 
+                                                             
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
          
     (* Expression parser. You can use the following terminals:
@@ -81,8 +101,28 @@ module Expr =
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    ostap (                                      
-      parse: empty {failwith "Not implemented"}
+    ostap (   
+      parse:                                   
+	  !(Ostap.Util.expr 
+             (fun x -> x)
+	     (Array.map (fun (a, s) -> a, 
+                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+                        ) 
+              [|                
+		`Lefta, ["!!"];
+		`Lefta, ["&&"];
+		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+		`Lefta, ["+" ; "-"];
+		`Lefta, ["*" ; "/"; "%"];
+              |] 
+	     )
+	     primary);
+      
+      primary:
+        name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
+      | n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | -"(" parse -")"
     )
     
   end
@@ -115,8 +155,30 @@ module Stmt =
          
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
-    )
+       parse  : seq | read | write | assign | skip | ifP | whileP | repeatP | forP | callP;                                                                      
+       read   : "read" -" "* -"(" x:IDENT -")" {Read x};
+       write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
+       assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
+       seq    : l:(read | write | assign | skip | ifP | whileP | repeatP | forP | callP) -" "* -";" -" "* r:parse {Seq (l, r)};
+       skip   : "skip" {Skip};
+       ifP    : -"if" -" "* ifHelper;
+       ifHelper : cond:!(Expr.parse) -" "* -"then" -" "* th:!(parse) el:!(elseP) {If (cond, th, el)};
+       elseP    : -"elif" -" "* ifHelper
+                | -"else" -" "* parse -"fi"
+                | -"fi" {Skip};
+       whileP : "while" -" "* cond:!(Expr.parse) -" "* 
+                   -"do" -" "* body:!(parse) 
+                   -"od" {While (cond, body)};
+       repeatP : "repeat" -" "* body:!(parse) -" "* 
+                 -"until" -" "* cond:!(Expr.parse)
+                 {Repeat (body, cond)};
+       forP   : -"for" -" "* pred:!(parse) -" "* "," -" "*
+                cond:!(Expr.parse) -" "* -"," -" "* 
+                post:!(parse) -" "* -"do" 
+                body:!(parse) -" "* -"od" 
+                {Seq (pred, While (cond, Seq (body, post)))};
+       callP  : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
+     )
       
   end
 
@@ -127,8 +189,14 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (     
-      parse: empty {failwith "Not implemented"}
+    ostap (                                      
+      parse: def;
+      def: -"fun" -" "* name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][inner]? -")" -" "*
+          locals:!(local)? -"{" -" "* body:!(Stmt.parse) -" "* -"}" { (name, ((match args with None -> [] | Some s -> s)
+                                                                             ,(match locals with None -> [] | Some s -> s)
+                                                                             , body)) };
+      local: -"local" -" "* locs:!(Util.listBy)[ostap ("," " "*)][inner];
+      inner: x:IDENT
     )
 
   end

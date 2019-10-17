@@ -4,6 +4,7 @@
    The library provides "@type ..." syntax extension and plugins like show, etc.
 *)
 open GT 
+open Language
              
 (* The type for the expression. Note, in regular OCaml there is no "@type..." 
    notation, it came from GT. 
@@ -50,5 +51,29 @@ let _ =
    Takes a state and an expression, and returns the value of the expression in 
    the given state.
 *)
-let eval = failwith "Not implemented yet"
+let to_func op =
+      let bti   = function true -> 1 | _ -> 0 in
+      let itb b = b <> 0 in
+      let (|>) f g   = fun x y -> f (g x y) in
+      match op with
+      | "+"  -> (+)
+      | "-"  -> (-)
+      | "*"  -> ( * )
+      | "/"  -> (/)
+      | "%"  -> (mod)
+      | "<"  -> bti |> (< )
+      | "<=" -> bti |> (<=)
+      | ">"  -> bti |> (> )
+      | ">=" -> bti |> (>=)
+      | "==" -> bti |> (= )
+      | "!=" -> bti |> (<>)
+      | "&&" -> fun x y -> bti (itb x && itb y)
+      | "!!" -> fun x y -> bti (itb x || itb y)
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
+    
+let rec eval st expr =      
+  match expr with
+  | Const n -> n
+  | Var   x -> State.eval st x
+  | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
                     
