@@ -33,7 +33,15 @@ type config = (prg * State.t) list * int list * Expr.config
 
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
-*)                                                  
+*)   
+let rec print_list = function 
+[] -> ()
+| e::l -> print_int e ; print_string " " ; print_list l
+
+let rec print_list_insn = function 
+[] -> ()
+| e::l -> (GT.show(insn) e) ; print_string " " ; print_list_insn l
+                                               
 let rec eval env (config : config) (prg : prg) : config = 
     (match prg with
      | []        -> config
@@ -43,37 +51,40 @@ let rec eval env (config : config) (prg : prg) : config =
           (match x with
            | BINOP bo ->
              (match stack with
-              (* | (r :: l :: ls) -> eval env (cs, eval cfg (Binop (bo, Const l, Const r)) :: ls, cfg) xs *)
+              | (r :: l :: ls) -> 
+              (* print_int l; print_string bo; print_int r; print_string "="; print_int (Expr.to_func bo l r); print_string "\n"; 
+              print_string "stack "; print_list stack; print_string "\n"; *)
+              eval env (cs, Expr.to_func bo l r :: ls, cfg) xs
               | _              -> failwith "SM: Can't calculate binop: too few values."
              )
            | CONST v  -> eval env (cs, v :: stack, cfg) xs
            | READ     -> 
              (match i with
-              (* | (y :: ys) -> eval env (cs, y :: stack, (st, ys, o)) xs *)
+              | (y :: ys) -> eval env (cs, y :: stack, (st, ys, o, ret)) xs
               | _         -> failwith "SM: No input to read."
              )
            | WRITE    ->
              (match stack with
-              (* | (y :: ys) -> eval env (cs, ys, (st, i, o @ [y])) xs *)
+              | (y :: ys) -> eval env (cs, ys, (st, i, o @ [y], ret)) xs
               | _         -> failwith "SM: No stack to output."
              )
            | LD v -> eval env (cs, State.eval st v :: stack, cfg) xs
            | ST v ->
              (match stack with
-              (* | (y :: ys) -> eval env (cs, ys, (State.update v y st, i, o)) xs *)
+              | (y :: ys) -> eval env (cs, ys, (State.update v y st, i, o, ret)) xs
               | _         -> failwith "SM: No stack to store."
              )
            | LABEL l        -> eval env (cs, stack, cfg) xs
            | JMP l          -> eval env (cs, stack, cfg) (env#labeled l)
            | CJMP (jmp, l)  -> 
              (match stack with
-              (* | (y :: ys) -> 
+              | (y :: ys) -> 
                 if (y <> 0 && jmp = "nz" || y = 0 && jmp = "z")
-                  then eval env (cs, stack, cfg) (env#labeled l)
-                  else eval env (cs, stack, cfg) xs *)
+                  then eval env (cs, ys, cfg) (env#labeled l)
+                  else eval env (cs, ys, cfg) xs
               | _         -> failwith "SM: No stack to do conditional jump."
              )
-           | BEGIN (name, args, locs)  -> 
+           | BEGIN (_, args, locs)  -> 
              let rec addVal st al vl = 
              (match al, vl with
               | (x :: xs), (y :: ys) -> addVal (State.update x y st) xs ys
@@ -89,6 +100,11 @@ let rec eval env (config : config) (prg : prg) : config =
               | []               -> config
               | ((p, st') :: cs) -> eval env (cs, stack, (State.leave st st', i, o, ret)) p
              )
+           | RET x ->
+             (match cs with
+              | []               -> config
+              | ((p, st') :: cs) -> eval env (cs, stack, (State.leave st st', i, o, ret)) p
+             )
           )
     )
 
@@ -98,6 +114,7 @@ let rec eval env (config : config) (prg : prg) : config =
 
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
+
 let run p i =
   let module M = Map.Make (String) in
   let rec make_map m = function
@@ -106,7 +123,8 @@ let run p i =
   | _ :: tl         -> make_map m tl
   in
   let m = make_map M.empty p in
-  let (_, _, (_, _, o, _)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [], None)) p in o
+  let (_, _, (_, _, o, _)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [], None)) p in
+  o
 
 class label_generator =
   object (self)
@@ -125,6 +143,8 @@ let rec compile' label_generator =
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  | Expr.Call (name, args) -> 
+  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, 0, false)]
   in
   function
   | Stmt.Seq (s1, s2)  -> 
@@ -152,8 +172,11 @@ let rec compile' label_generator =
   let body_comp, new_gen = compile' new_gen body in
   [LABEL body_l] @ body_comp @ expr cond @ [CJMP ("z", body_l)], new_gen
   | Call (name, args) -> 
-  (* (List.flatten (List.rev (List.map expr args))) @ [CALL name], label_generator *)
-  failwith "whaaat"
+  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, 0, false)], label_generator
+  | Return x -> 
+    (match x with
+     | None   -> [RET false], label_generator
+     | Some x -> expr x @ [RET true], label_generator)
   
 let rec compileDefinition label_generator = 
   function

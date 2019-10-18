@@ -5,8 +5,8 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
-open Combinators
-                         
+open Combinators     
+                 
 (* States *)
 module State =
   struct
@@ -94,7 +94,21 @@ module Expr =
       | "!!" -> fun x y -> bti (itb x || itb y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op) 
                                                              
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+    let rec eval env ((st, i, o, r) as conf) expr = 
+    match expr with
+    | Const n -> (st, i, o, Some n)
+    | Var x   -> (st, i, o, Some (State.eval st x))
+    | Binop (op, le, re) -> 
+    let (_, _, _, Some l) as conf = eval env conf le in
+    let (st, i, o, Some r) = eval env conf re in
+    (st, i, o, Some (to_func op l r))
+    | Call (name, args) -> 
+    let (st, i, o, args) = List.fold_left 
+      (fun (st, i, o, acc) x -> 
+        let (st, i, o, Some r) = eval env (st, i, o, None) x in
+        (st, i, o, acc @ [r])
+      ) (st, i, o, []) args in
+    env#definition env name args (st, i, o, None)
          
     (* Expression parser. You can use the following terminals:
 
@@ -151,11 +165,49 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemnted"
+    let skip_op l r =
+    match r with
+    | Skip -> l
+    | _    -> Seq (l, r)
+    
+    let rec eval env ((st, i, o, r) as conf) k stmt =
+    match (k, stmt) with
+    | (Skip, Skip) -> conf
+    | (k, Skip)    -> eval env conf Skip k
+    | (k, Assign (x, e)) -> 
+    let (st, i, o, Some r) = Expr.eval env conf e in
+    eval env (State.update x r st, i, o, None) Skip k
+    | (k, Write e) -> 
+    let (st, i, o, Some r) = Expr.eval env conf e in
+    eval env (st, i, o @ [r], None) Skip k
+    | (k, Read x) -> 
+    let (r :: i) = i in
+    eval env (State.update x r st, i, o, None) Skip k
+    | (k, Seq (l, r)) ->
+    eval env conf (skip_op r k) l
+    | (k, If (e, th, el)) ->
+    let (st, i, o, Some r) = Expr.eval env conf e in
+    let c = (st, i, o, None) in
+    if r = 1 then eval env c k th else eval env c k el
+    | (k, While (e, body)) ->
+    let (st, i, o, Some r) = Expr.eval env conf e in
+    let c = (st, i, o, None) in
+    if r = 1 then eval env c (skip_op stmt k) body else eval env c Skip k
+    | (k, Repeat (body, expr)) ->
+    eval env conf (skip_op (If (Binop ("==", expr, Const 0), stmt, Skip)) k) body
+    | (k, Call (name, args)) ->
+    let (st, i, o, args) = List.fold_left 
+      (fun (st, i, o, acc) x -> 
+        let (st, i, o, Some r) = Expr.eval env (st, i, o, None) x in
+        (st, i, o, acc @ [r])
+      ) (st, i, o, []) args in
+    eval env (env#definition env name args (st, i, o, None)) Skip k
+    | (_, Return None)     -> conf
+    | (_, Return (Some e)) -> Expr.eval env conf e
          
     (* Statement parser *)
     ostap (
-       parse  : seq | read | write | assign | skip | ifP | whileP | repeatP | forP | callP;                                                                      
+       parse  : seq | read | write | assign | skip | ifP | whileP | repeatP | forP | callP | returnP;                                                                      
        read   : "read" -" "* -"(" x:IDENT -")" {Read x};
        write  : "write" -" "* -"(" x:!(Expr.parse) -")" {Write x};
        assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, y)};
@@ -177,7 +229,8 @@ module Stmt =
                 post:!(parse) -" "* -"do" 
                 body:!(parse) -" "* -"od" 
                 {Seq (pred, While (cond, Seq (body, post)))};
-       callP  : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
+       callP   : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))};
+       returnP : -" "* -"return" -" "* expr:!(Expr.parse)? {Return expr}
      )
       
   end
@@ -219,7 +272,7 @@ let eval (defs, body) i =
     Stmt.eval
       (object
          method definition env f args (st, i, o, r) =                                                                      
-           let xs, locs, s      =  snd @@ M.find f m in
+           let xs, locs, s      = snd @@ M.find f m in
            let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (xs @ locs)) (List.combine xs args) in
            let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
            (State.leave st'' st, i', o', r')
