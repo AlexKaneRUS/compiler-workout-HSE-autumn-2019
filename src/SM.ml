@@ -150,17 +150,17 @@ class label_generator =
     method get_label = "label_" ^ string_of_int counter, {< counter = counter + 1 >}
   end
   
-let rec isProcedure =
+let rec isFunction =
   function
   | Stmt.Seq (s1, s2)  -> 
-  isProcedure s1 || isProcedure s2
+  isFunction s1 || isFunction s2
   | Stmt.Assign _ | Stmt.Skip -> false
   | Stmt.If (cond, th, el) -> 
-  isProcedure th && isProcedure el
+  isFunction th && isFunction el
   | Stmt.While (cond, body) -> 
-  isProcedure body
+  isFunction body
   | Stmt.Repeat (body, cond) -> 
-  isProcedure body
+  isFunction body
   | Call (name, args) -> false
   | Return x -> true
 
@@ -214,7 +214,7 @@ let (defs, t) = t in
 let module M = Map.Make (String) in
 let rec make_map m = function
 | []              -> m
-| (name, (_, _, body)) :: tl -> make_map (M.add name (isProcedure body) m) tl
+| (name, (_, _, body)) :: tl -> make_map (M.add name (not (isFunction body)) m) tl
 in
 let m = make_map M.empty defs in
 let m = M.add "write" true (M.add "read" false m) in
