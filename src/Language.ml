@@ -166,9 +166,7 @@ module Expr =
         let (st, i, o, Some r) = eval env (st, i, o, None) x in
         (st, i, o, acc @ [r])
       ) (st, i, o, []) args in
-    if Builtin.isBuiltin name 
-    then Builtin.eval (st, i, o, None) args name 
-    else env#definition env name args (st, i, o, None)
+    env#definition env name args (st, i, o, None)
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left

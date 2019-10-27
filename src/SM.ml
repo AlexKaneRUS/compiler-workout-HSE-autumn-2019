@@ -86,9 +86,9 @@ let rec eval env config prg =
              ) in
              let fstate, fstack = addVal (State.enter st (args @ locs)) args stack in
              eval env (cs, fstack, (fstate, i, o)) xs
-           | CALL (name, nargs, b)  -> 
+           | CALL (name, nargs, procedure)  -> 
              if Builtin.isBuiltin name
-             then eval env (env#builtin config name nargs b) xs
+             then eval env (env#builtin config name nargs procedure) xs
              else eval env ((xs, st) :: cs, stack, cfg) (env#labeled name)
            | END  -> 
              (match cs with
@@ -149,52 +149,75 @@ class label_generator =
 
     method get_label = "label_" ^ string_of_int counter, {< counter = counter + 1 >}
   end
+  
+let rec isProcedure =
+  function
+  | Stmt.Seq (s1, s2)  -> 
+  isProcedure s1 || isProcedure s2
+  | Stmt.Assign _ | Stmt.Skip -> false
+  | Stmt.If (cond, th, el) -> 
+  isProcedure th && isProcedure el
+  | Stmt.While (cond, body) -> 
+  isProcedure body
+  | Stmt.Repeat (body, cond) -> 
+  isProcedure body
+  | Call (name, args) -> false
+  | Return x -> true
 
-let rec compile' label_generator =
+let rec compile' label_generator isProcedureMap =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
   | Expr.Call (name, args) -> 
-  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, 0, false)]
+  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, List.length args, 
+    let module M = Map.Make (String) in M.find name isProcedureMap)]
   in
   function
   | Stmt.Seq (s1, s2)  -> 
-  let s1_comp, new_gen = compile' label_generator s1 in
-  let s2_comp, new_gen = compile' new_gen s2 in
+  let s1_comp, new_gen = compile' label_generator isProcedureMap s1 in
+  let s2_comp, new_gen = compile' new_gen isProcedureMap s2 in
   s1_comp @ s2_comp, new_gen
   | Stmt.Assign (x, _, e) -> expr e @ [ST x], label_generator
   | Stmt.Skip             -> [], label_generator
   | Stmt.If (cond, th, el) -> 
   let el_l, new_gen = label_generator#get_label in
   let end_l, new_gen = new_gen#get_label in
-  let th_comp, new_gen = compile' new_gen th in
-  let el_comp, new_gen = compile' new_gen el in
+  let th_comp, new_gen = compile' new_gen isProcedureMap th in
+  let el_comp, new_gen = compile' new_gen isProcedureMap el in
   expr cond @ [CJMP ("z", el_l)] @ th_comp @ [JMP end_l; LABEL el_l] @ el_comp @ [LABEL end_l], new_gen
   | Stmt.While (cond, body) -> 
   let cond_l, new_gen = label_generator#get_label in
   let end_l, new_gen = new_gen#get_label in
-  let body_comp, new_gen = compile' new_gen body in
+  let body_comp, new_gen = compile' new_gen isProcedureMap body in
   [LABEL cond_l] @ expr cond @ [CJMP ("z", end_l)] @ body_comp @ [JMP cond_l; LABEL end_l], new_gen
   | Stmt.Repeat (body, cond) -> 
   let body_l, new_gen = label_generator#get_label in
   let end_l, new_gen = new_gen#get_label in
-  let body_comp, new_gen = compile' new_gen body in
+  let body_comp, new_gen = compile' new_gen isProcedureMap body in
   [LABEL body_l] @ body_comp @ expr cond @ [CJMP ("z", body_l)], new_gen
   | Call (name, args) -> 
-  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, List.length args, true)], label_generator
+  (List.flatten (List.rev (List.map expr args))) @ [CALL (name, List.length args, 
+    let module M = Map.Make (String) in M.find name isProcedureMap)], label_generator
   | Return x -> 
     (match x with
      | None   -> [RET false], label_generator
      | Some x -> expr x @ [RET true], label_generator)
   
-let rec compileDefinition label_generator = 
+let rec compileDefinition label_generator isProcedureMap = 
   function
-  | (name, (args, locs, body)) -> let body, new_gen = compile' label_generator body in
-                                  [LABEL name; BEGIN (name, args, locs)] @ body @ [END], new_gen
+  | (name, (args, locs, body)) -> let body, new_gen = compile' label_generator isProcedureMap body in
+                                  [LABEL name; BEGIN (name, args, locs)] @ body @ [RET false], new_gen
   
 let compile t =
 let (defs, t) = t in 
-let res, new_gen = compile' (new label_generator) t in
-let defs, new_gen = List.fold_left (fun (l, gen) y -> let l', new_gen = compileDefinition gen y in l @ l', new_gen) ([], new_gen) defs in
+let module M = Map.Make (String) in
+let rec make_map m = function
+| []              -> m
+| (name, (_, _, body)) :: tl -> make_map (M.add name (isProcedure body) m) tl
+in
+let m = make_map M.empty defs in
+let m = M.add "write" true (M.add "read" false m) in
+let res, new_gen = compile' (new label_generator) m t in
+let defs, new_gen = List.fold_left (fun (l, gen) y -> let l', new_gen = compileDefinition gen m y in l @ l', new_gen) ([], new_gen) defs in
 res @ [END] @ defs

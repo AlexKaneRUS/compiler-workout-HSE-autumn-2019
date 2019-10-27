@@ -132,6 +132,12 @@ let rec compileMod env = function
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
+let rec range_rec l a b = 
+  if a = b then l @ [b]
+  else range_rec (l @ [a]) (a + 1) b
+
+let range a b = range_rec [] a b
+
 let rec compile env = function
 | []           -> env, []
 | (CONST x)::prg -> 
@@ -176,19 +182,29 @@ let rec compile env = function
                      | a    -> failwith ("Unknown binary operator: " ^ a)) in
   let env, instrs' = compile env prg in
   env, instrs @ instrs'
-| (CALL (name, nargs, p))::prg ->
-if name = "read" then
-let op, env = env#allocate in 
-let env, instrs = compile env prg in
-env, [Call "Lread"; Mov (eax, op)] @ instrs
-else if name = "write" then
-let op, env = env#pop in 
-let env, instrs = compile env prg in
-env, [Push op; Call "Lwrite"] @ instrs
-else failwith "Not implemented yet!"
-| (BEGIN (_, args, locs))::prg  -> failwith "Not implemented yet!"
-| END::prg   -> failwith "Not implemented yet!"
-| (RET x)::prg -> failwith "Not implemented yet!"
+| (CALL (name, nargs, isProcedure))::prg ->
+let name = if name = "write" then "Lwrite" else if name = "read" then "Lread" else name in
+let registersToStack, stackToRegisters = 
+  List.fold_left (fun (st, reg) x -> st @ [Mov (x, eax); Push eax], (Pop x :: reg)) ([], []) env#live_registers in
+let argsOnStack, env = 
+  if nargs = 0 then [], env
+  else List.fold_left (fun (st, env) _ -> let op, env = env#pop in Push op :: st, env) ([], env) (range 0 (nargs - 1)) in
+let env, notProcAdd = 
+  if (not isProcedure) then let op, env = env#allocate in env, [Mov (eax, op)] else env, [] in
+let env, rest = compile env prg in 
+env, registersToStack @ argsOnStack @ [Call name; Binop ("+", L (4 * nargs), esp)] @ notProcAdd @ stackToRegisters @ rest
+| (BEGIN (name, args, locs))::prg  -> 
+let env = env#enter name args locs in
+let _, env = env#allocate in 
+let env, rest = compile env prg in
+env, [Push ebp; Mov (esp, ebp); Binop ("-", L (List.length locs), esp)] @ rest
+| END::prg   ->
+compile env prg
+| (RET ret)::prg -> 
+let mv, env = if ret then let op, env = env#pop in [Mov (op, eax)], env else [], env in
+let _, env = env#allocate in
+let _, p = compile env prg in
+env, mv @ [Mov (ebp, esp); Pop ebp; Ret] @ p
 
 (* A set of strings *)           
 module S = Set.Make (String)
