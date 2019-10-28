@@ -201,13 +201,13 @@ let rec compile' label_generator isProcedureMap =
     let module M = Map.Make (String) in M.find name isProcedureMap)], label_generator
   | Return x -> 
     (match x with
-     | None   -> [RET false], label_generator
-     | Some x -> expr x @ [RET true], label_generator)
+     | None   -> [RET false; END], label_generator
+     | Some x -> expr x @ [RET true; END], label_generator)
   
 let rec compileDefinition label_generator isProcedureMap = 
   function
   | (name, (args, locs, body)) -> let body, new_gen = compile' label_generator isProcedureMap body in
-                                  [LABEL name; BEGIN (name, args, locs)] @ body @ [RET false], new_gen
+                                  [LABEL name; BEGIN (name, args, locs)] @ body @ [END], new_gen
   
 let compile t =
 let (defs, t) = t in 
