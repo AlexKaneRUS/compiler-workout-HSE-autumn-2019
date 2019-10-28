@@ -197,14 +197,14 @@ env, registersToStack @ argsOnStack @ [Call name; Binop ("+", L (4 * nargs), esp
 let env = env#enter name args locs in
 let _, env = env#allocate in 
 let env, rest = compile env prg in
-env, [Push ebp; Mov (esp, ebp); Binop ("-", L (List.length locs), esp)] @ rest
+env, [Push ebp; Mov (esp, ebp); Binop ("-", L (4 * List.length locs), esp)] @ rest
 | END::prg   ->
 compile env prg
 | (RET ret)::prg -> 
 let mv, env = if ret then let op, env = env#pop in [Mov (op, eax)], env else [], env in
 let _, env = env#allocate in
-let _, p = compile env prg in
-env, mv @ [Mov (ebp, esp); Pop ebp; Ret] @ p
+let env', prg = compile env prg in
+env#move_globals env', mv @ [Mov (ebp, esp); Pop ebp; Ret] @ prg
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -262,6 +262,9 @@ class env =
     (* enters a function *)
     method enter f a l =
       {< stack_slots = List.length l; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
+      
+    method move_globals (s : env) = 
+      {< globals = S.of_list s#globals >}
 
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "L%s_epilogue" fname
