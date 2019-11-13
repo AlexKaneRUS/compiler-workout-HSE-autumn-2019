@@ -90,18 +90,124 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code =
-  let suffix = function
-  | "<"  -> "l"
+let compileSimple x env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); Binop (x, rOp, eax); Mov (eax, op)]
+  
+let showReg (R i) = regs.(i)
+      
+let compileComparison x env = function
+| (lOp, rOp) ->
+  let op, env = env#allocate in
+  let suf = (match x with
+  | "<" -> "l"
   | "<=" -> "le"
-  | "==" -> "e"
-  | "!=" -> "ne"
+  | ">" -> "g"
   | ">=" -> "ge"
-  | ">"  -> "g"
-  | _    -> failwith "unknown operator"	
-  in
-  let rec compile' env scode = failwith "Not implemented" in
-  compile' env code
+  | "==" -> "e"
+  | "!=" -> "ne") in
+  env, [Mov (lOp, eax); Binop ("cmp", rOp, eax); Mov (L 0, eax); Set (suf, "%al"); Mov (eax, op)]
+  
+let intToBool x = [Mov (x, eax); Binop ("cmp", L 0, eax); Mov (L 0, eax);
+                   Set ("ne", "%al"); Mov (eax, x)]
+                   
+let compileLogic x env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, intToBool lOp @ intToBool rOp @ [Mov (lOp, eax); Binop (x, rOp, eax); Mov (eax, op)]
+
+let rec compileDiv env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); Cltd; IDiv rOp; Mov (eax, op)]
+  
+let rec compileMod env = function
+| (lOp, rOp) -> 
+  let op, env = env#allocate in
+  env, [Mov (lOp, eax); Cltd; IDiv rOp; Mov (edx, op)]
+
+(* Symbolic stack machine evaluator
+     compile' : env -> prg -> env * instr list
+   Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
+   of x86 instructions
+*)
+let rec range_rec l a b = 
+  if a = b then l @ [b]
+  else range_rec (l @ [a]) (a + 1) b
+
+let range a b = range_rec [] a b
+
+let rec compile' env = function
+| []           -> env, []
+| (CONST x)::prg -> 
+  let op, env     = env#allocate in
+  let env, instrs = compile' env prg in
+  env, (Mov (L x, op))::instrs
+| (LD x)::prg -> 
+  let op, env = env#allocate in 
+  let env, instrs = compile' env prg in
+  env, [Mov (env#loc x, eax); Mov (eax, op)] @ instrs
+| (ST x)::prg -> 
+  let op, env = env#pop in 
+  let env = env#global x in
+  let env, instrs = compile' env prg in
+  env, [Mov (op, eax); Mov(eax, env#loc x)] @ instrs
+| (LABEL l)::prg -> 
+  let env, instrs = compile' env prg in
+  env, [Label l] @ instrs
+| (JMP l)::prg -> 
+  let env, instrs = compile' env prg in
+  env, [Jmp l] @ instrs
+| (CJMP (z, l))::prg -> 
+  let op, env = env#pop in
+  let env, instrs = compile' env prg in
+  env, [Binop ("cmp", L 0, op); CJmp (z, l)] @ instrs
+| (BINOP x)::prg -> 
+  let rOp, lOp, env = env#pop2 in
+  let env, instrs = (match x with
+                     | "+"  -> compileSimple x env (lOp, rOp)
+                     | "-"  -> compileSimple x env (lOp, rOp)
+                     | "*"  -> compileSimple x env (lOp, rOp)
+                     | "/"  -> compileDiv env (lOp, rOp)
+                     | "%"  -> compileMod env (lOp, rOp)
+                     | "<"  -> compileComparison x env (lOp, rOp)
+                     | "<=" -> compileComparison x env (lOp, rOp)
+                     | ">"  -> compileComparison x env (lOp, rOp)
+                     | ">=" -> compileComparison x env (lOp, rOp)
+                     | "==" -> compileComparison x env (lOp, rOp)
+                     | "!=" -> compileComparison x env (lOp, rOp)
+                     | "&&" -> compileLogic x env (lOp, rOp)
+                     | "!!" -> compileLogic x env (lOp, rOp)
+                     | a    -> failwith ("Unknown binary operator: " ^ a)) in
+  let env, instrs' = compile' env prg in
+  env, instrs @ instrs'
+| (CALL (name, nargs, isProcedure))::prg ->
+let name = if name = "write" then "Lwrite" else if name = "read" then "Lread" else name in
+let registersToStack, stackToRegisters = 
+  List.fold_left (fun (st, reg) x -> st @ [Push x], Pop x :: reg) ([], []) env#live_registers in
+let argsOnStack, env = 
+  if nargs = 0 then [], env
+  else List.fold_left (fun (st, env) _ -> let op, env = env#pop in Push op :: st, env) ([], env) (range 0 (nargs - 1)) in
+let env, notProcAdd = 
+  if (not isProcedure) then let op, env = env#allocate in env, [Mov (eax, op)] else env, [] in
+let env, rest = compile' env prg in 
+env, registersToStack @ argsOnStack @ [Call name; Binop ("+", L (4 * nargs), esp)] @ stackToRegisters @ notProcAdd @ rest
+| (BEGIN (name, args, locs))::prg  -> 
+let env = env#enter name args locs in
+let env, rest = compile' env prg in
+env, [Push ebp; Mov (esp, ebp); Binop ("-", L (4 * List.length locs), esp)] @ rest
+| END::prg   ->
+let env', prg = compile' env prg in
+env#move_globals env', [Binop ("+", L (4 * List.length env#locals), esp); Jmp "epilogue"] @ prg
+| (RET ret)::prg -> 
+let mv, env = if ret then let op, env = env#pop in [Mov (op, eax)], env else [], env in
+let env, prg = compile' env prg in
+env, mv @ prg
+
+let compile env p =
+let env, prg = compile' env p in
+env, prg @ [Label "epilogue"; Mov (ebp, esp); Pop ebp; Ret]
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -153,6 +259,8 @@ class env =
     (* gets all global variables *)      
     method globals = S.elements globals
 
+    method locals = locals
+
     (* gets a number of stack positions allocated *)
     method allocated = stack_slots                                
                                 
@@ -160,6 +268,9 @@ class env =
     method enter f a l =
       {< stack_slots = List.length l; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
 
+    method move_globals (s : env) = 
+      {< globals = S.of_list s#globals >}
+      
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "L%s_epilogue" fname
                                      
