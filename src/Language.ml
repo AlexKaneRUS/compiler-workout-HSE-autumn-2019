@@ -214,19 +214,18 @@ module Expr =
       primary:
             name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
           | n:DECIMAL {Const n}
+          | -"(" parse -")"
           | array_length
           | array_elem
           | array_init
           | x:IDENT   {Var x}
           | -"\'" char_lit:IDENT -"\'" {Const (Char.code (String.get char_lit 0))}
           | -"\"" str_lit:IDENT -"\"" {Array (List.map (fun x -> Const (Char.code x)) (List.init (String.length str_lit) (String.get str_lit)))}
-          | -"[" -" "* elems:!(Util.listBy)[ostap ("," " "*)][parse]? -" "* -"]" {Array (match elems with None -> [] | Some s -> s)}
-          | -"(" parse -")";
+          | -"[" -" "* elems:!(Util.listBy)[ostap ("," " "*)][parse]? -" "* -"]" {Array (match elems with None -> [] | Some s -> s)};
 
       array_init:
         -"[" -" "* elems:!(Util.listBy)[ostap ("," " "*)][parse]? -" "* -"]"  
         {Array (match elems with None -> [] | Some s -> s)}
-      | -"(" parse -")" -" "*
       | x:IDENT {Var x};
 
       array_elem:
