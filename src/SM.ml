@@ -100,7 +100,10 @@ let rec eval env config prg =
               | []               -> config
               | ((p, st') :: cs) -> eval env (cs, stack, (State.leave st st', i, o)) p
              )
-          )
+            | STA (x, n) -> 
+              let (e :: inds, stack) = split n stack in
+              eval env (cs, stack, (Stmt.update st x e (List.rev inds), i, o)) xs
+        )
     )
 
 (* Top-level evaluation
@@ -172,14 +175,18 @@ let rec compile' label_generator isProcedureMap =
   | Expr.Call (name, args) -> 
   (List.flatten (List.rev (List.map expr args))) @ [CALL (name, List.length args, 
     let module M = Map.Make (String) in M.find name isProcedureMap)]
+  | Expr.Array array -> List.flatten (List.map expr array) @ [CALL ("$array", List.length array, false)]
+  | Expr.Elem (array, index) -> expr array @ expr index @ [CALL ("$elem", 2, false)]
+  | Expr.Length array -> expr array @ [CALL ("$length", 1, false)]
   in
   function
   | Stmt.Seq (s1, s2)  -> 
   let s1_comp, new_gen = compile' label_generator isProcedureMap s1 in
   let s2_comp, new_gen = compile' new_gen isProcedureMap s2 in
   s1_comp @ s2_comp, new_gen
-  | Stmt.Assign (x, _, e) -> expr e @ [ST x], label_generator
-  | Stmt.Skip             -> [], label_generator
+  | Stmt.Assign (x, [], e) -> expr e @ [ST x], label_generator
+  | Stmt.Assign (x, indexes, e) ->  List.flatten (List.map expr indexes) @ expr e @ [STA (x, List.length indexes + 1)], label_generator
+  | Stmt.Skip              -> [], label_generator
   | Stmt.If (cond, th, el) -> 
   let el_l, new_gen = label_generator#get_label in
   let end_l, new_gen = new_gen#get_label in

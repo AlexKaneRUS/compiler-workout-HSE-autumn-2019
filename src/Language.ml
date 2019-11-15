@@ -167,6 +167,16 @@ module Expr =
         (st, i, o, acc @ [r])
       ) (st, i, o, []) args in
     env#definition env name args (st, i, o, None)
+    | Elem (array, index) ->
+    let (st, i, o, Some array) = eval env conf array in
+    let (st, i, o, Some ind) = eval env (st, i, o, None) index in
+    Builtin.eval (st, i, o, None) [array; ind] "$elem"
+    | Array array ->
+    let (st, i, o, array) = eval_list env conf array in
+    Builtin.eval (st, i, o, None) array "$array"
+    | Length array -> 
+    let (st, i, o, Some array) = eval env conf array in
+    Builtin.eval (st, i, o, None) [array] "$length"
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -204,11 +214,34 @@ module Expr =
       primary:
             name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))}
           | n:DECIMAL {Const n}
+          | array_length
+          | array_elem
+          | array_init
           | x:IDENT   {Var x}
-          | -"(" parse -")"
-        )
-    
-  end
+          | -"\'" char_lit:IDENT -"\'" {Const (Char.code (String.get char_lit 0))}
+          | -"\"" str_lit:IDENT -"\"" {Array (List.map (fun x -> Const (Char.code x)) (List.init (String.length str_lit) (String.get str_lit)))}
+          | -"[" -" "* elems:!(Util.listBy)[ostap ("," " "*)][parse]? -" "* -"]" {Array (match elems with None -> [] | Some s -> s)}
+          | -"(" parse -")";
+
+      array_init:
+        -"[" -" "* elems:!(Util.listBy)[ostap ("," " "*)][parse]? -" "* -"]"  
+        {Array (match elems with None -> [] | Some s -> s)}
+      | -"(" parse -")" -" "*
+      | x:IDENT {Var x};
+
+      array_elem:
+            x:array_init -" "* indexes:!(Util.listBy)[ostap (" "*)][index] 
+            {List.fold_left (fun x y -> Elem (x, y)) x indexes};
+
+      array_length:
+          x:array_elem -" "* -"." -" "* -"length" {Length x}
+        | x:array_init -" "* -"." -" "* -"length" {Length x};
+
+      index:
+          -" "* -"[" -" "* ind:!(parse) -" "* -"]"
+      )
+
+    end
                     
 (* Simple statements: syntax and sematics *)
 module Stmt =
@@ -254,9 +287,15 @@ module Stmt =
     match (k, stmt) with
     | (Skip, Skip) -> conf
     | (k, Skip)    -> eval env conf Skip k
-    | (k, Assign (x, _, e)) -> 
+    | (k, Assign (x, inds, e)) -> 
+    (match inds with
+    | _::_ ->
+    let (st, i, o, inds) = Expr.eval_list env conf inds in
+    let (st, i, o, Some y) = Expr.eval env conf e in
+    eval env (update st x y inds, i, o, None) Skip k
+    | [] ->
     let (st, i, o, Some r) = Expr.eval env conf e in
-    eval env (State.update x r st, i, o, None) Skip k
+    eval env (update st x r [], i, o, None) Skip k)
     | (k, Seq (l, r)) ->
     eval env conf (skip_op r k) l
     | (k, If (e, th, el)) ->
@@ -282,7 +321,7 @@ module Stmt =
     (* Statement parser *)
     ostap (
       parse  : seq | assign | skip | ifP | whileP | repeatP | forP | callP | returnP;                                                                      
-      assign : x:IDENT -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, [], y)};
+      assign : x:IDENT -" "* inds:!(Util.listBy)[ostap (" "*)][indP]? -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, (match inds with None -> [] | Some l -> l), y)};
       seq    : l:(assign | skip | ifP | whileP | repeatP | forP | callP) -" "* -";" -" "* r:parse {Seq (l, r)};
       skip   : "skip" {Skip};
       ifP    : -"if" -" "* ifHelper;
@@ -302,7 +341,8 @@ module Stmt =
               body:!(parse) -" "* -"od" 
               {Seq (pred, While (cond, Seq (body, post)))};
       callP   : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))};
-      returnP : -" "* -"return" -" "* expr:!(Expr.parse)? {Return expr}
+      returnP : -" "* -"return" -" "* expr:!(Expr.parse)? {Return expr};
+      indP : -"[" -" "* x:!(Expr.parse) -" "* -"]"
     )
       
   end
