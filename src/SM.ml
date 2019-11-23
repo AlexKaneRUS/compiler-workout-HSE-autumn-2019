@@ -256,21 +256,23 @@ let rec compile' label_generator isProcedureMap =
     | [] -> [], label_generator
     | (p, s) :: ps ->
     let next_label, new_gen = label_generator#get_label in
-    let rec match_pattern = function
-    | Stmt.Pattern.Wildcard -> [DROP]
-    | Stmt.Pattern.Ident _ -> [DROP]
+    let rec match_pattern indexes = function
+    | Stmt.Pattern.Wildcard -> []
+    | Stmt.Pattern.Ident _ -> []
     | Stmt.Pattern.Sexp (t, ps) ->
+    (* put `indexes` field of scrutinee on stack *)
+    [DUP] @ List.flatten (List.map (fun x -> [CONST x; CALL (".elem", 2, false)]) indexes) @
     (* if scrutinee's field's tag doesn't match tag of current pattern, go to the next case *)
     [DUP; TAG t; CJMP ("z", next_label)] @
     (* if scrutinee's field's tag's length doesn't match sexp's length, go to the next case *)
     [DUP; CALL (".length", 1, false); CONST (List.length ps); BINOP ("-"); CJMP ("nz", next_label)] @
+    (* drop scrutinee *)
+    [DROP] @
     (* recursively pattern match all fields of sexp *)
     (let _, res = List.fold_left (fun res p -> 
-      let i, res = res in 
-        (i + 1, res @ [DUP; CONST i; CALL (".elem", 2, false)] @ match_pattern p)
-      ) (0, []) ps 
-      in
-    res) @ [DROP]
+        let i, res = res in (i + 1, res @ match_pattern (indexes @ [i]) p)
+      ) (0, []) ps in
+    res)
     in
     let rec matching_to_stack = function
     | Stmt.Pattern.Wildcard -> [DROP]
@@ -282,7 +284,7 @@ let rec compile' label_generator isProcedureMap =
     let compiled_body, new_gen = compile' new_gen isProcedureMap s in
     let rest_cases, new_gen = compile_cases new_gen ps in
     (* check if scrutinee satsfies condition *)
-    [DUP] @ match_pattern p @ 
+    match_pattern [] p @ 
     (* if scrutinee satisfies condition, enter local scope *)
     [ENTER (Stmt.Pattern.vars p)] @
     (* store in values of local variables retrieved from the pattern-matching *)
