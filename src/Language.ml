@@ -122,8 +122,8 @@ module Builtin =
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))     
 
     let isBuiltin = function
-    | "read" | "write" | "$elem" | "$length"
-    | "$array" | "isArray" | "isString"       -> true
+    | "read" | "write" | ".elem" | ".length"
+    | ".array" | "isArray" | "isString"       -> true
     | _                                       -> false                    
        
   end
@@ -208,13 +208,16 @@ module Expr =
     | Elem (array, index) ->
     let (st, i, o, Some array) = eval env conf array in
     let (st, i, o, Some ind) = eval env (st, i, o, None) index in
-    Builtin.eval (st, i, o, None) [array; ind] "$elem"
+    Builtin.eval (st, i, o, None) [array; ind] ".elem"
     | Array array ->
     let (st, i, o, array) = eval_list env conf array in
-    Builtin.eval (st, i, o, None) array "$array"
+    Builtin.eval (st, i, o, None) array ".array"
     | Length array -> 
     let (st, i, o, Some array) = eval env conf array in
-    Builtin.eval (st, i, o, None) [array] "$length"
+    Builtin.eval (st, i, o, None) [array] ".length"
+    | Sexp (n, es) -> 
+    let (st, i, o, array) = eval_list env conf es in 
+    (st, i, o, Some (Value.sexp n array))
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -256,6 +259,7 @@ module Expr =
           | array_length
           | array_elem
           | array_init
+          | sexp
           | x:IDENT   {Var x}
           | -"\'" char_lit:IDENT -"\'" {Const (Char.code (String.get char_lit 0))}
           | -"\"" str_lit:IDENT -"\"" {Array (List.map (fun x -> Const (Char.code x)) (List.init (String.length str_lit) (String.get str_lit)))}
@@ -275,7 +279,11 @@ module Expr =
         | x:array_init -" "* -"." -" "* -"length" {Length x};
 
       index:
-          -" "* -"[" -" "* ind:!(parse) -" "* -"]"
+          -" "* -"[" -" "* ind:!(parse) -" "* -"]";
+      
+      sexp: 
+          -"`" name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][parse] -")" {Sexp (name, args)}
+        | -"`" name:IDENT {Sexp (name, [])}
       )
     
   end
@@ -297,11 +305,41 @@ module Stmt =
 
         (* Pattern parser *)                                 
         ostap (
-          parse: empty {failwith "Not implemented"}
+          parse:
+            -"_" {Wildcard}
+          | sexp
+          | name:IDENT {Ident name};
+
+          sexp: 
+            -"`" name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][parse] -")" {Sexp (name, args)}
+          | -"`" name:IDENT {Sexp (name, [])}
         )
         
         let vars p =
-          transform(t) (fun f -> object inherit [string list, _] @t[foldl] f method c_Ident s _ name = name::s end) [] p         
+          transform(t) (fun f -> object inherit [string list, _] @t[foldl] f method c_Ident s _ name = name::s end) [] p  
+
+        let rec union xss xss1 = 
+        let module M = Set.Make (String) in
+        match xss, xss1 with
+        | None, _ -> None
+        | _, None -> None
+        | Some (xs, s), Some (xs1, s1) -> Some (M.union xs xs1, (fun x -> if M.mem x xs1 then s1 x else s x))
+
+        let rec zip_with f l l1 = match l, l1 with
+        | _, [] -> []
+        | [], _ -> []
+        | (x::xs), (y::ys) -> f x y :: zip_with f xs ys
+
+        let rec pattern_eval p l = 
+        let module M = Set.Make (String) in
+        match p, l with
+        | Wildcard, _ -> Some (M.empty, State.undefined)
+        | Ident x, e  -> Some (M.singleton x, State.bind x e State.undefined)
+        | Sexp (t, exprs), Value.Sexp (tag, arr) -> 
+        if t = tag && List.length exprs = List.length arr then
+          List.fold_left union (Some (M.empty, State.undefined)) (zip_with pattern_eval exprs arr)
+        else None
+        | _ -> None
       end
         
     (* The type for statements *)
@@ -342,6 +380,13 @@ module Stmt =
     | _    -> Seq (l, r)
       
     let rec eval env ((st, i, o, r) as conf) k stmt =
+    let module M = Set.Make (String) in
+    let rec eval_pat env ((st, i, o, r) as conf) k = function
+    | (v, [])          -> failwith "Bad pattern match."
+    | (v, (p, s) :: t) -> match Pattern.pattern_eval p v with 
+                          | Some (vars, st') -> eval env (State.push st st' (M.elements vars), i, o, None) (skip_op Leave k) s
+                          | None -> eval_pat env conf k (v, t)
+    in
     match (k, stmt) with
     | (Skip, Skip) -> conf
     | (k, Skip)    -> eval env conf Skip k
@@ -375,10 +420,14 @@ module Stmt =
     eval env (env#definition env name args (st, i, o, None)) Skip k
     | (_, Return None)     -> conf
     | (_, Return (Some e)) -> Expr.eval env conf e
+    | (k, Leave) -> eval env (State.drop st, i, o, None) Skip k
+    | (k, Case (e, ps)) ->
+    let (st, i, o, Some e) = Expr.eval env conf e in
+    eval_pat env (st, i, o, None) k (e, ps)
                                                         
     (* Statement parser *)
     ostap (
-      parse  : seq | assign | skip | ifP | whileP | repeatP | forP | callP | returnP;                                                                      
+      parse  : seq | assign | skip | ifP | whileP | repeatP | forP | callP | returnP | caseP;                                                                      
       assign : x:IDENT -" "* inds:!(Util.listBy)[ostap (" "*)][indP]? -" "* -":=" -" "* y:!(Expr.parse) {Assign (x, (match inds with None -> [] | Some l -> l), y)};
       seq    : l:(assign | skip | ifP | whileP | repeatP | forP | callP) -" "* -";" -" "* r:parse {Seq (l, r)};
       skip   : "skip" {Skip};
@@ -400,7 +449,9 @@ module Stmt =
               {Seq (pred, While (cond, Seq (body, post)))};
       callP   : name:IDENT -" "* -"(" args:!(Util.listBy)[ostap ("," " "*)][Expr.parse]? -")" {Call (name, (match args with None -> [] | Some s -> s))};
       returnP : -" "* -"return" -" "* expr:!(Expr.parse)? {Return expr};
-      indP : -"[" -" "* x:!(Expr.parse) -" "* -"]"
+      indP : -"[" -" "* x:!(Expr.parse) -" "* -"]";
+      caseP : -"case" -" "* e:!(Expr.parse) -" "* -"of" -" "* matches:!(Util.listBy)[ostap ("|" " "*)][caseHelper]? -" "* -"esac" {Case (e, (match matches with None -> [] | Some s -> s))};
+      caseHelper: p:!(Pattern.parse) -" "* -"->" -" "* s:!(parse) {(p, s)}
     )
       
   end

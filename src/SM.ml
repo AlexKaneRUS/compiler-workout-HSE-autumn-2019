@@ -113,6 +113,31 @@ let rec eval env config prg =
             | STA (x, n) -> 
               let (e :: inds, stack) = split n stack in
               eval env (cs, stack, (Stmt.update st x e (List.rev inds), i, o)) xs
+            | SEXP (tag, n) ->
+              let (inds, stack) = split n stack in
+              eval env (cs, Value.sexp tag (List.rev inds) :: stack, cfg) xs
+            | LEAVE -> eval env (cs, stack, (State.drop st, i, o)) xs
+            | ENTER vars -> eval env (cs, stack, (State.push st State.undefined vars, i, o)) xs
+            | TAG tag -> 
+            (match stack with
+              | (e :: ys) -> eval env (cs, (if Value.tag_of e = tag then Value.of_int 1 else Value.of_int 0) :: ys, (st, i, o)) xs
+              | _         -> failwith "Empty stack."
+             )
+            | SWAP ->
+            (match stack with
+              | (x :: y :: ys) -> eval env (cs, y :: x :: ys, (st, i, o)) xs
+              | _              -> failwith "Can't swap."
+             )
+            | DUP ->
+            (match stack with
+              | (x :: ys) -> eval env (cs, x :: x :: ys, (st, i, o)) xs
+              | _         -> failwith "Can't dup."
+             )
+            | DROP ->
+            (match stack with
+              | (x :: ys) -> eval env (cs, ys, (st, i, o)) xs
+              | _         -> failwith "Can't drop."
+             )
         )
     )
 
@@ -177,6 +202,8 @@ let rec isFunction =
   isFunction body
   | Call (name, args) -> false
   | Return x -> true
+  | Case (_, ps) -> List.for_all (fun x -> let _, body = x in isFunction body) ps
+  | _ -> false
 
 let rec compile' label_generator isProcedureMap =
   let rec expr = function
@@ -186,9 +213,10 @@ let rec compile' label_generator isProcedureMap =
   | Expr.Call (name, args) -> 
   (List.flatten (List.rev (List.map expr args))) @ [CALL (name, List.length args, 
     let module M = Map.Make (String) in M.find name isProcedureMap)]
-  | Expr.Array array -> List.flatten (List.map expr array) @ [CALL ("$array", List.length array, false)]
-  | Expr.Elem (array, index) -> expr array @ expr index @ [CALL ("$elem", 2, false)]
-  | Expr.Length array -> expr array @ [CALL ("$length", 1, false)]
+  | Expr.Array array -> List.flatten (List.map expr array) @ [CALL (".array", List.length array, false)]
+  | Expr.Elem (array, index) -> expr array @ expr index @ [CALL (".elem", 2, false)]
+  | Expr.Length array -> expr array @ [CALL (".length", 1, false)]
+  | Expr.Sexp (t, es) -> List.flatten (List.map expr es) @ [SEXP (t, List.length es)]
   in
   function
   | Stmt.Seq (s1, s2)  -> 
@@ -221,6 +249,51 @@ let rec compile' label_generator isProcedureMap =
     (match x with
      | None   -> [RET false; END], label_generator
      | Some x -> expr x @ [RET true; END], label_generator)
+  | Leave -> [LEAVE], label_generator
+  | Case (e, ps) ->
+  let end_label, new_gen = label_generator#get_label in
+  let rec compile_cases label_generator = function
+    | [] -> [], label_generator
+    | (p, s) :: ps ->
+    let next_label, new_gen = label_generator#get_label in
+    let rec match_pattern = function
+    | Stmt.Pattern.Wildcard -> [DROP]
+    | Stmt.Pattern.Ident _ -> [DROP]
+    | Stmt.Pattern.Sexp (t, ps) ->
+    (* if scrutinee's field's tag doesn't match tag of current pattern, go to the next case *)
+    [DUP; TAG t; CJMP ("z", next_label)] @
+    (* if scrutinee's field's tag's length doesn't match sexp's length, go to the next case *)
+    [DUP; CALL (".length", 1, false); CONST (List.length ps); BINOP ("-"); CJMP ("nz", next_label)] @
+    (* recursively pattern match all fields of sexp *)
+    (let _, res = List.fold_left (fun res p -> 
+      let i, res = res in 
+        (i + 1, res @ [DUP; CONST i; CALL (".elem", 2, false)] @ match_pattern p)
+      ) (0, []) ps 
+      in
+    res) @ [DROP]
+    in
+    let rec matching_to_stack = function
+    | Stmt.Pattern.Wildcard -> [DROP]
+    | Stmt.Pattern.Ident x -> [ST x]
+    | Stmt.Pattern.Sexp (t, ps) ->
+    let _, res = List.fold_left (fun res p -> let i, res = res in (i + 1, res @ [DUP; CONST i; CALL (".elem", 2, false)] @ matching_to_stack p)) (0, []) ps in
+    res @ [DROP]
+    in
+    let compiled_body, new_gen = compile' new_gen isProcedureMap s in
+    let rest_cases, new_gen = compile_cases new_gen ps in
+    (* check if scrutinee satsfies condition *)
+    [DUP] @ match_pattern p @ 
+    (* if scrutinee satisfies condition, enter local scope *)
+    [ENTER (Stmt.Pattern.vars p)] @
+    (* store in values of local variables retrieved from the pattern-matching *)
+    matching_to_stack p @ 
+    (* execute body of matching, exit local scope and skip all other cases *)
+    compiled_body @ [LEAVE; JMP end_label] @ 
+    (* if pattern matching above failed this case of matching will be next *)
+    [LABEL next_label; DROP] @ rest_cases, new_gen
+  in
+  let compiled_cases, new_gen = compile_cases new_gen ps in
+  expr e @ compiled_cases @ [LABEL end_label] , new_gen
   
 let rec compileDefinition label_generator isProcedureMap = 
   function
