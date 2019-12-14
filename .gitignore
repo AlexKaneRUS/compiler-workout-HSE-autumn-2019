@@ -15,3 +15,6 @@ src/.depend
 regression/*.log
 regression/deep-expressions/*.log
 regression/expressions/*.log
+doc
+regression
+.DS_Store
