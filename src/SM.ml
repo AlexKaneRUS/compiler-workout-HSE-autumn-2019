@@ -67,7 +67,7 @@ let rec eval env config prg =
            | BINOP bo ->
              (match stack with
               | (r :: l :: ls) -> 
-              eval env (cs, Value.of_int (Expr.to_func bo (Value.to_int l) (Value.to_int r)) :: ls, cfg) xs
+              eval env (cs, Value.of_int (Expr.to_func bo (Value.to_int' bo l) (Value.to_int' ("2 " ^ bo) r)) :: ls, cfg) xs
               | _              -> failwith "SM: Can't calculate binop: too few values."
              )
            | CONST v  -> eval env (cs, Value.of_int v :: stack, cfg) xs
@@ -82,7 +82,7 @@ let rec eval env config prg =
            | CJMP (jmp, l)  -> 
              (match stack with
               | (y :: ys) -> 
-                if (Value.to_int y <> 0 && jmp = "nz" || Value.to_int y = 0 && jmp = "z")
+                if (Value.to_int' "cjmp" y <> 0 && jmp = "nz" || Value.to_int' "cjmp" y = 0 && jmp = "z")
                   then eval env (cs, ys, cfg) (env#labeled l)
                   else eval env (cs, ys, cfg) xs
               | _         -> failwith "SM: No stack to do conditional jump."
@@ -117,7 +117,11 @@ let rec eval env config prg =
               let (inds, stack) = split n stack in
               eval env (cs, Value.sexp tag (List.rev inds) :: stack, cfg) xs
             | LEAVE -> eval env (cs, stack, (State.drop st, i, o)) xs
-            | ENTER vars -> eval env (cs, stack, (State.push st State.undefined vars, i, o)) xs
+            | ENTER names -> 
+            let st = State.push st State.undefined names in
+            let (vals, stack) = split (List.length names) stack in
+            let st = List.fold_left (fun res (name, v) -> State.update name v res) st (List.combine (List.rev names) vals) in
+            eval env (cs, stack, (st, i, o)) xs
             | TAG tag -> 
             (match stack with
               | (e :: ys) -> eval env (cs, (if Value.tag_of e = tag then Value.of_int 1 else Value.of_int 0) :: ys, (st, i, o)) xs
@@ -266,7 +270,7 @@ let rec compile' label_generator isProcedureMap =
     [DUP; TAG t; CJMP ("z", next_label)] @
     (* if scrutinee's field's tag's length doesn't match sexp's length, go to the next case *)
     [DUP; CALL (".length", 1, false); CONST (List.length ps); BINOP ("-"); CJMP ("nz", next_label)] @
-    (* drop scrutinee *)
+    (* drop scrutinee's field *)
     [DROP] @
     (* recursively pattern match all fields of sexp *)
     (let _, res = List.fold_left (fun res p -> 
@@ -274,25 +278,24 @@ let rec compile' label_generator isProcedureMap =
       ) (0, []) ps in
     res)
     in
-    let rec matching_to_stack = function
-    | Stmt.Pattern.Wildcard -> [DROP]
-    | Stmt.Pattern.Ident x -> [ST x]
+    let rec matching_to_stack indexes = function
+    | Stmt.Pattern.Wildcard -> []
+    | Stmt.Pattern.Ident _ -> [DUP] @ List.flatten (List.map (fun x -> [CONST x; CALL (".elem", 2, false)]) indexes) @ [SWAP]
     | Stmt.Pattern.Sexp (t, ps) ->
-    let _, res = List.fold_left (fun res p -> let i, res = res in (i + 1, res @ [DUP; CONST i; CALL (".elem", 2, false)] @ matching_to_stack p)) (0, []) ps in
-    res @ [DROP]
+    let _, res = List.fold_left (fun (i, res) p -> (i + 1, res @ matching_to_stack (indexes @ [i]) p)) (0, []) ps in
+    res
     in
     let compiled_body, new_gen = compile' new_gen isProcedureMap s in
     let rest_cases, new_gen = compile_cases new_gen ps in
     (* check if scrutinee satsfies condition *)
     match_pattern [] p @ 
-    (* if scrutinee satisfies condition, enter local scope *)
-    [ENTER (Stmt.Pattern.vars p)] @
-    (* store in values of local variables retrieved from the pattern-matching *)
-    matching_to_stack p @ 
+    (* if scrutinee satisfies condition, store in values of local variables 
+    retrieved from the pattern-matching and enter local scope *)
+    matching_to_stack [] p @ [DROP; ENTER (List.rev (Stmt.Pattern.vars p))] @
     (* execute body of matching, exit local scope and skip all other cases *)
     compiled_body @ [LEAVE; JMP end_label] @ 
     (* if pattern matching above failed this case of matching will be next *)
-    [LABEL next_label; DROP] @ rest_cases, new_gen
+    (match p with Sexp _ -> [LABEL next_label; DROP] | _ -> []) @ rest_cases, new_gen
   in
   let compiled_cases, new_gen = compile_cases new_gen ps in
   expr e @ compiled_cases @ [LABEL end_label] , new_gen
@@ -310,7 +313,7 @@ let rec make_map m = function
 | (name, (_, _, body)) :: tl -> make_map (M.add name (not (isFunction body)) m) tl
 in
 let m = make_map M.empty defs in
-let m = M.add "write" true (M.add "read" false m) in
+let m = M.add "write" true (M.add "read" false (M.add "raw" false m)) in
 let res, new_gen = compile' (new label_generator) m t in
 let defs, new_gen = List.fold_left (fun (l, gen) y -> let l', new_gen = compileDefinition gen m y in l @ l', new_gen) ([], new_gen) defs in
 res @ [END] @ defs

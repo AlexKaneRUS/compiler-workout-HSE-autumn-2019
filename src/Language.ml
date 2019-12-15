@@ -11,11 +11,15 @@ open Combinators
 module Value =
   struct
 
-    @type t = Int of int | String of bytes | Array of t array | Sexp of string * t list (*with show*)
+    @type t = Int of int | String of bytes | Array of t array | Sexp of string * t list with show
 
     let to_int = function 
     | Int n -> n 
-    | _ -> failwith "int value expected"
+    | e -> failwith ("int value expected, but got " ^ (show(t) e))
+
+    let to_int' s = function 
+    | Int n -> n 
+    | e -> failwith ("int value expected, but got " ^ (show(t) e) ^ " " ^ s)
 
     let to_string = function 
     | String s -> s 

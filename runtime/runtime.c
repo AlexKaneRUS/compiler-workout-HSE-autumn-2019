@@ -142,6 +142,7 @@ static void printValue (void *p) {
 }
 
 extern void* Belem (void *p, int i) {
+  // printf("%d", i);
   data *a = TO_DATA(p);
   i = UNBOX(i);
   

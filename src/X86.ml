@@ -17,6 +17,7 @@ let word_size = 4;;
 | S of int     (* a position on the hardware stack *)
 | M of string  (* a named memory location          *)
 | L of int     (* an immediate operand             *)
+| LL of string
 with show
 
 (* For convenience we define the following synonyms for the registers: *)         
@@ -72,6 +73,7 @@ let show instr =
            else Printf.sprintf "%d(%%ebp)"  (8+(-i-1) * word_size)
   | M x -> x
   | L i -> Printf.sprintf "$%d" i
+  | LL s -> "$" ^ s
   in
   match instr with
   | Cltd               -> "\tcltd"
@@ -150,6 +152,35 @@ let rec range_rec l a b =
 
 let range a b = range_rec [] a b
 
+let compile_call env additional_arguments = function 
+| (CALL (name, nargs, isProcedure)) ->
+let name, add, needRev = 
+(match name with 
+| "raw" -> "Lraw", [], true
+| "write" -> "Lwrite", [], true
+| "read" -> "Lread", [], true
+| ".elem" -> "Belem", [], true
+| ".array" -> "Barray", [Push (L nargs)], true
+| ".length" -> "Blength", [], true
+| "Bsta" -> "Bsta", [], true
+| "Bsexp" -> "Bsexp", [], true
+| "Btag" -> "Btag", [], true
+| _ -> name, [], false
+)
+in
+let additional_arguments = additional_arguments @ add in
+let registersToStack, stackToRegisters = 
+  List.fold_left (fun (st, reg) x -> st @ [Push x], Pop x :: reg) ([], []) (env#live_registers nargs) in
+let argsOnStack, env = 
+  if nargs = 0 then [], env
+  else List.fold_left (fun (st, env) _ -> let op, env = env#pop' "compile_call" in Push op :: st, env) ([], env) (range 0 (nargs - 1)) in
+let env, notProcAdd = if not isProcedure then let op, env = env#allocate in env, [Mov (eax, op)] else env, [] in
+env, 
+registersToStack @ (if needRev then List.rev argsOnStack else argsOnStack) @ 
+additional_arguments @ [Call name; Binop ("+", L (4 * (nargs + List.length additional_arguments)), esp)] @ 
+stackToRegisters @ notProcAdd
+| _ -> failwith "Won't compile."
+
 let rec compile' env = function
 | []           -> env, []
 | (CONST x)::prg -> 
@@ -158,21 +189,25 @@ let rec compile' env = function
   env, (Mov (L x, op))::instrs
 | (LD x)::prg -> 
   let op, env = env#allocate in 
+  let p = [Mov (env#loc x, eax); Mov (eax, op)] in
   let env, instrs = compile' env prg in
-  env, [Mov (env#loc x, eax); Mov (eax, op)] @ instrs
+  env, p @ instrs
 | (ST x)::prg -> 
-  let op, env = env#pop in 
+  let op, env = env#pop' "st" in 
   let env = env#global x in
   let env, instrs = compile' env prg in
   env, [Mov (op, eax); Mov(eax, env#loc x)] @ instrs
 | (LABEL l)::prg -> 
+  let env = if env#is_barrier then (env#drop_barrier)#retrieve_stack l else env in
   let env, instrs = compile' env prg in
   env, [Label l] @ instrs
 | (JMP l)::prg -> 
+  let env = (env#set_stack l)#set_barrier in
   let env, instrs = compile' env prg in
   env, [Jmp l] @ instrs
 | (CJMP (z, l))::prg -> 
-  let op, env = env#pop in
+  let env = env#set_stack l in
+  let op, env = env#pop' "cjmp" in
   let env, instrs = compile' env prg in
   env, [Binop ("cmp", L 0, op); CJmp (z, l)] @ instrs
 | (BINOP x)::prg -> 
@@ -194,28 +229,64 @@ let rec compile' env = function
                      | a    -> failwith ("Unknown binary operator: " ^ a)) in
   let env, instrs' = compile' env prg in
   env, instrs @ instrs'
-| (CALL (name, nargs, isProcedure))::prg ->
-let name = if name = "write" then "Lwrite" else if name = "read" then "Lread" else name in
-let registersToStack, stackToRegisters = 
-  List.fold_left (fun (st, reg) x -> st @ [Push x], Pop x :: reg) ([], []) (env#live_registers nargs) in
-let argsOnStack, env = 
-  if nargs = 0 then [], env
-  else List.fold_left (fun (st, env) _ -> let op, env = env#pop in Push op :: st, env) ([], env) (range 0 (nargs - 1)) in
-let env, notProcAdd = 
-  if (not isProcedure) then let op, env = env#allocate in env, [Mov (eax, op)] else env, [] in
+| (CALL (name, nargs, isProcedure))::prg -> 
+let env, p = compile_call env [] (CALL (name, nargs, isProcedure)) in
 let env, rest = compile' env prg in 
-env, registersToStack @ argsOnStack @ [Call name; Binop ("+", L (4 * nargs), esp)] @ stackToRegisters @ notProcAdd @ rest
+env, p @ rest
 | (BEGIN (name, args, locs))::prg  -> 
 let env = env#enter name args locs in
+let p = [Push ebp; Mov (esp, ebp); Binop ("-", L (4 * List.length locs), esp); Binop ("-", LL env#lsize, esp)] in
 let env, rest = compile' env prg in
-env, [Push ebp; Mov (esp, ebp); Binop ("-", L (4 * List.length locs), esp)] @ rest
+env, p @ rest
 | END::prg   ->
+let p = [Binop ("+", L (4 * List.length env#locals), esp); Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (4 * env#allocated)); Jmp "epilogue"] in
 let env', prg = compile' env prg in
-env#move_globals env', [Binop ("+", L (4 * List.length env#locals), esp); Jmp "epilogue"] @ prg
+env#move_globals env', p @ prg
 | (RET ret)::prg -> 
-let mv, env = if ret then let op, env = env#pop in [Mov (op, eax)], env else [], env in
+let mv, env = if ret then let op, env = env#pop' "ret" in [Mov (op, eax)], env else [], env in
 let env, prg = compile' env prg in
 env, mv @ prg
+| (STA (tag, n))::prg -> 
+let e, env = env#pop' "sta" in
+let arrLoc = env#loc tag in
+let env, p = compile_call env [Push arrLoc; Push e; Push (L (n - 1))] (CALL ("Bsta", n - 1, false)) in
+let env, rest = compile' env prg in 
+env, p @ rest
+| (SEXP (tag, n))::prg -> 
+let env = env#push (L (env#hash tag)) in
+let env, p = compile_call env [Push (L (n + 1))] (CALL ("Bsexp", n + 1, false)) in
+let env, rest = compile' env prg in 
+env, p @ rest
+| DROP::prg ->
+let _, env = env#pop' "drop" in
+let env, rest = compile' env prg in 
+env, rest
+| DUP::prg ->
+let op = env#peek in
+let op1, env = env#allocate in
+let env, rest = compile' env prg in 
+env, [Mov (op, eax); Mov (eax, op1)] @ rest
+| SWAP::prg ->
+let op1, op2 = env#peek2 in
+let env, rest = compile' env prg in 
+env, [Mov (op2, eax); Mov (op1, op2); Mov (eax, op1)] @ rest
+| (TAG n)::prg ->
+let env = env#push (L (env#hash n)) in
+let env, p = compile_call env [] (CALL ("Btag", 2, false)) in
+let env, rest = compile' env prg in 
+env, p @ rest
+| (ENTER vars)::prg ->
+let args, env = 
+  if (List.length vars) = 0 then [], env
+  else List.fold_left (fun (st, env) _ -> let op, env = env#pop' "enter" in op :: st, env) ([], env) (range 0 (List.length vars - 1)) in
+let env = env#scope vars in
+let argsToLocs = List.fold_left (fun res (name, op) -> [Mov (op, eax); Mov (eax, env#loc name)] @ res) [] (List.combine (List.rev vars) args) in
+let env, rest = compile' env prg in 
+env, argsToLocs @ rest
+| LEAVE::prg ->
+let env = env#unscope in
+let env, rest = compile' env prg in 
+env, rest
 
 let compile env p =
 let env, prg = compile' env p in
@@ -284,7 +355,7 @@ class env =
     method allocate =    
       let x, n =
 	let rec allocate' = function
-	| []                            -> ebx          , 0
+	| []                            -> ebx          , stack_slots
 	| (S n)::_                      -> S (n+1)      , n+2
 	| (R n)::_ when n < num_of_regs -> R (n+1)      , stack_slots
 	| _                             -> S static_size, static_size+1
@@ -298,6 +369,8 @@ class env =
 
     (* pops one operand from the symbolic stack *)
     method pop = let x::stack' = stack in x, {< stack = stack' >}
+
+    method pop' s = try let x::stack' = stack in x, {< stack = stack' >} with _ -> failwith s
 
     (* pops two operands from the symbolic stack *)
     method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
@@ -379,6 +452,7 @@ class env =
 *)
 let genasm (ds, stmt) =
   let stmt = Language.Stmt.Seq (stmt, Language.Stmt.Return (Some (Language.Expr.Call ("raw", [Language.Expr.Const 0])))) in
+  (* let () = SM.print_prg (SM.compile (ds, stmt)) in *)
   let env, code =
     compile
       (new env)
