@@ -235,17 +235,17 @@ let env, rest = compile' env prg in
 env, p @ rest
 | (BEGIN (name, args, locs))::prg  -> 
 let env = env#enter name args locs in
-let p = [Push ebp; Mov (esp, ebp); Binop ("-", L (4 * List.length locs), esp); Binop ("-", LL env#lsize, esp)] in
+let p = [Push ebp; Mov (esp, ebp); Binop ("-", LL env#lsize, esp)] in
 let env, rest = compile' env prg in
 env, p @ rest
 | END::prg   ->
-let p = [Binop ("+", L (4 * List.length env#locals), esp); Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (4 * env#allocated)); Jmp "epilogue"] in
+let p = [Label env#epilogue; Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (4 * env#allocated)); Mov (ebp, esp); Pop ebp; Ret] in
 let env', prg = compile' env prg in
 env#move_globals env', p @ prg
 | (RET ret)::prg -> 
 let mv, env = if ret then let op, env = env#pop' "ret" in [Mov (op, eax)], env else [], env in
 let env, prg = compile' env prg in
-env, mv @ prg
+env, mv @ [Jmp env#epilogue] @ prg
 | (STA (tag, n))::prg -> 
 let e, env = env#pop' "sta" in
 let arrLoc = env#loc tag in
@@ -355,7 +355,7 @@ class env =
     method allocate =    
       let x, n =
 	let rec allocate' = function
-	| []                            -> ebx          , stack_slots
+	| []                            -> ebx          , 0
 	| (S n)::_                      -> S (n+1)      , n+2
 	| (R n)::_ when n < num_of_regs -> R (n+1)      , stack_slots
 	| _                             -> S static_size, static_size+1

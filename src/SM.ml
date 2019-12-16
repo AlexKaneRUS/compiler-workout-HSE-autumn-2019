@@ -251,8 +251,8 @@ let rec compile' label_generator isProcedureMap =
     let module M = Map.Make (String) in M.find name isProcedureMap)], label_generator
   | Return x -> 
     (match x with
-     | None   -> [RET false; END], label_generator
-     | Some x -> expr x @ [RET true; END], label_generator)
+     | None   -> [RET false], label_generator
+     | Some x -> expr x @ [RET true], label_generator)
   | Leave -> [LEAVE], label_generator
   | Case (e, ps) ->
   let end_label, new_gen = label_generator#get_label in
