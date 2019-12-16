@@ -206,8 +206,8 @@ let rec compile' env = function
   let env, instrs = compile' env prg in
   env, [Jmp l] @ instrs
 | (CJMP (z, l))::prg -> 
-  let env = env#set_stack l in
   let op, env = env#pop' "cjmp" in
+  let env = env#set_stack l in
   let env, instrs = compile' env prg in
   env, [Binop ("cmp", L 0, op); CJmp (z, l)] @ instrs
 | (BINOP x)::prg -> 
