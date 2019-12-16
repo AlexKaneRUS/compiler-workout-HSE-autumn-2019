@@ -7,4 +7,6 @@ fun sum (x) {
 
 x := read ();
 
-write (sum (`cons (1, `nil)))
+write (sum (`nil));
+write (sum (`cons (100, `nil)));
+write (sum (`cons (100, `cons (200, `nil))))

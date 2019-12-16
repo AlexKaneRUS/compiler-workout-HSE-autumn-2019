@@ -280,7 +280,7 @@ let args, env =
   if (List.length vars) = 0 then [], env
   else List.fold_left (fun (st, env) _ -> let op, env = env#pop' "enter" in op :: st, env) ([], env) (range 0 (List.length vars - 1)) in
 let env = env#scope vars in
-let argsToLocs = List.fold_left (fun res (name, op) -> [Mov (op, eax); Mov (eax, env#loc name)] @ res) [] (List.combine (List.rev vars) args) in
+let argsToLocs = List.fold_left (fun res (name, op) -> [Mov (op, eax); Mov (eax, env#loc name)] @ res) [] (List.combine vars args) in
 let env, rest = compile' env prg in 
 env, argsToLocs @ rest
 | LEAVE::prg ->
